@@ -1,4 +1,4 @@
-# Gausseous — OVVO fork
+# Gausseous — fork
 
 > **Fork** — ajoute une caméra « fenêtre » pilotée par le tracking
 > de tête (webcam + MediaPipe) ou le gyroscope du téléphone, par-dessus toutes
