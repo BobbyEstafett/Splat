@@ -1,4 +1,4 @@
-# Tracking : la caméra « fenêtre » (fork OVVO)
+# Tracking & Motion : la caméra « fenêtre » (fork OVVO)
 
 Ce fork de Gausseous ajoute une section **Tracking** dans le rail. La position
 du spectateur, suivie par webcam ou par le gyroscope d'un téléphone, déplace le
@@ -26,6 +26,7 @@ en http ne fonctionne pas.
 |---|---|---|
 | Webcam — head | Écran fixe d'installation | MediaPipe Face Landmarker, environ 30 fps. Le point suivi est le milieu des deux yeux et la distance est estimée par l'écart interpupillaire. |
 | Gyroscope — phone | Mobile | Sur iOS, la permission doit être accordée au tap : il faut appuyer sur **Start** (pas de démarrage automatique). |
+| Video file — head | Répétition sans être devant l'écran | Même pipeline que la webcam, alimenté par une vidéo de tête pré-enregistrée qui tourne en boucle (bouton **Choose video…**). Si la vidéo est en miroir, cocher *Invert X*. |
 | Mouse — test | Mise au point sans caméra | La position du pointeur sur le viewport tient lieu de position de tête. |
 | Recorded take | Relecture / export | Rejoue une prise enregistrée, calée sur la timeline. |
 
@@ -79,6 +80,77 @@ Pour exporter un mouvement de tête :
 La prise est enregistrée dans le preset JSON. La source et l'état on/off ne le
 sont pas, parce qu'ils dépendent de la machine.
 
+## Motion : une vidéo pilote la caméra
+
+La section **Motion** transfère le mouvement d'une caméra filmée vers la caméra
+virtuelle. Il y a deux voies.
+
+### 1. Depuis une vidéo — analyse 2D (dans le navigateur)
+
+**Load video…** analyse n'importe quel clip (MP4 H.264, WebM ; le MOV ProRes
+n'est pas lu par les navigateurs). Le logiciel suit des points d'une image à
+l'autre, puis en déduit le **panoramique**, le **tilt**, le **roulis** et
+l'**avancée / recul** (zoom apparent). La courbe s'affiche sous le bouton. Le
+mouvement est appliqué **en offset** par-dessus le mode caméra courant, et il
+part de la caméra telle que tu l'as cadrée.
+
+| Réglage | Rôle |
+|---|---|
+| In place / Around pivot | *In place* : la caméra tourne sur elle-même, comme la vraie. *Around pivot* : la rotation devient une orbite autour du pivot, et le sujet reste dans le cadre. |
+| Full / Smooth only / Shake only | Tout le mouvement, seulement sa composante lente (stabilisée), ou seulement le tremblé, pour donner une sensation de caméra à l'épaule à n'importe quel plan. |
+| Rotation / Roll / Push gain | Amplitude de chaque composante. Une valeur négative inverse le sens. |
+| Clean | Lissage anti-bruit du tracking, en images. |
+| Shake split | Fréquence de séparation entre lent et tremblé, en images. |
+| Clip FOV | Champ horizontal de la caméra qui a filmé. Il convertit les pixels en angles : un 24 mm plein format fait environ 74°, un smartphone en grand-angle environ 65-75°. |
+| Analysis rate | Nombre d'images analysées par seconde de vidéo. |
+
+**Timeline = clip length** cale la durée de la timeline sur celle du clip, pour
+que le mouvement passe à sa vitesse réelle. Sinon, il est étiré sur la
+timeline. Le mouvement est déterministe : il passe tel quel à l'export vidéo,
+et les courbes sont enregistrées dans le preset.
+
+Limite : c'est une estimation 2D, pas une reconstruction. Un travelling latéral
+est lu comme un panoramique. Pour un mouvement exact, il faut passer par la voie 3D.
+
+L'analyse prend typiquement quelques fois la durée du clip (selon la machine), et la vue 3D se fige
+pendant le calcul. Sur un clip long, 15 images par seconde suffisent souvent.
+
+### 2. Depuis une trajectoire caméra — import 3D (exact)
+
+Le camera tracking se fait dans un outil dédié, puis on importe le résultat
+avec **Load track…** :
+
+| Format | Vient de |
+|---|---|
+| `transforms.json` | Nerfstudio, Instant-NGP et les pipelines de splats qui suivent ce format |
+| `images.txt` (+ `cameras.txt`, sélectionner les deux) | COLMAP, c'est-à-dire souvent la trajectoire qui a servi à entraîner le splat |
+| `.gltf` / `.glb` avec une caméra animée | Blender (Motion Tracking → Solve, puis export glTF avec l'animation), Cinema 4D, Houdini… |
+| `.chan` | Nuke (et After Effects via un script d'export) : `frame tx ty tz rx ry rz [vfov]`, ordre ZXY |
+
+La trajectoire devient le mode caméra **Path**, à côté de Manual / Keyframes /
+Orbit. Position, orientation (roulis compris) et focale sont rejouées.
+
+- **Relative to current camera** (par défaut) : la trajectoire démarre là où
+  est la caméra au moment de l'import, et seul le *mouvement* est transféré.
+  **Scale** règle son ampleur (à ×1, le mouvement couvre environ un rayon de
+  scène). Pour repartir d'ailleurs : cadrer en mode Manual, puis **Re-anchor here**.
+- **Splat space (same capture)** : si la vidéo trackée est celle qui a servi à
+  capturer le splat, ses poses sont déjà dans le repère du splat, et la prise de
+  vue d'origine est rejouée exactement. Le *Transform* de Gausseous (Correct)
+  est appliqué automatiquement. Si les axes ne collent pas, utiliser
+  **World** : Nerfstudio → COLMAP (annule l'`applied_transform` du JSON),
+  Z-up → Y-up, Y-up → Z-up.
+- **Track fps** : sert à calculer la durée réelle des formats « image par
+  image » (COLMAP, transforms.json, .chan). Les numéros d'image présents dans
+  les noms de fichiers (`frame_00042.png`) sont respectés, donc les images non
+  recalées par COLMAP ne décalent pas le timing.
+- **Bake to keyframes** : convertit la trajectoire en N keyframes caméra,
+  éditables avec les outils habituels. Le roulis est perdu, car un keyframe
+  ne stocke que la position et la cible.
+
+Le head tracking et le mouvement 2D s'ajoutent par-dessus le mode Path.
+Ordre d'application : orientation exacte du Path, puis mouvement 2D, puis tête.
+
 ## Clavier
 
 | Touche | Action |
@@ -117,6 +189,9 @@ ligne, il faut aussi les copier en local et modifier les URLs de l'importmap.
 - La distance est estimée par l'écart entre les yeux. Une tête très tournée
   paraît plus lointaine qu'elle ne l'est.
 - Un seul spectateur est suivi (le premier visage détecté).
+- Motion 2D : un plan avec beaucoup de sujets en mouvement (foule, eau) ou un
+  flou de bougé fort fausse l'estimation. Les images non suivies sont tenues
+  immobiles et comptées dans l'info.
 - L'export vidéo exige toujours Chrome ou Edge (WebCodecs), comme l'original.
 - Le modèle MediaPipe (environ 3,6 Mo) et le runtime wasm (environ 12 Mo) se
   chargent au premier Start. Le chargement prend quelques secondes en ligne.

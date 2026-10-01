@@ -222,7 +222,12 @@
   #tkPreview.hide, body.hud-hidden #tkPreview{display:none}
   #tkStart[aria-pressed="true"], #tkRec[aria-pressed="true"]{border-color:var(--live); color:var(--live)}
   .mod[data-tkmode="window"] .tk-orbit, .mod[data-tkmode="orbit"] .tk-window{display:none}
-  .mod:not([data-tksrc="webcam"]) .tk-cam{display:none}
+  .mod:not([data-tksrc="webcam"]):not([data-tksrc="headvideo"]) .tk-cam{display:none}
+  .mod:not([data-tksrc="headvideo"]) .tk-hv{display:none}
+  #vmPlot{width:100%; height:64px; display:block; background:var(--void); border:1px solid var(--rule); margin:0 0 9px}
+  .mod[data-vmmode="inplace"] .vm-orbit{display:none}
+  .mod:not([data-palign="splat"]) .path-splat, .mod[data-palign="splat"] .path-rel{display:none}
+  .sub{color:var(--ink); letter-spacing:.12em; text-transform:uppercase; font-size:10px; margin:14px 0 8px; border-top:1px solid var(--rule); padding-top:10px}
   #osd span{font-variant-numeric:tabular-nums}
 
   #drop{
@@ -588,6 +593,7 @@
       <button type="button" data-mode="manual" title="Mouse/touch orbit only, nothing drives the camera">Manual</button>
       <button type="button" data-mode="keyframes" class="on" title="Camera follows the keyframe path below">Keyframes</button>
       <button type="button" data-mode="orbit" title="Camera follows a generated turntable move">Orbit</button>
+      <button type="button" data-mode="path" title="Camera follows an imported 3D camera track (Motion section)">Path</button>
     </div>
     <div class="btns" style="margin-bottom:9px">
       <button type="button" id="pickPivotToggle" aria-pressed="false" title="Tap the model to orbit around what you tapped, instead of the object's own centre. Works in Manual, Keyframes and Orbit — mouse-drag orbiting and Orbit mode both turn around whatever the pivot currently is.">Pick pivot</button>
@@ -618,6 +624,9 @@
       <span id="camDirty" title="Orbit has moved the camera away from what the curve shows here — Add key to keep it, or scrub to discard it">· off curve</span>
     </p>
 
+    <p id="camPathHint" style="color:var(--ink-dim); margin:0 0 9px; display:none">
+      Path follows the 3D camera track loaded in <b>Motion</b>. Bake it to keyframes there to edit it.
+    </p>
     <div id="camOrbitRows">
       <div class="btns" style="margin:9px 0">
         <select id="obAxis" title="Axis the camera revolves about">
@@ -652,12 +661,14 @@
     <div class="btns" style="margin-bottom:9px">
       <select id="tkSource" title="What drives the viewpoint">
         <option value="webcam" selected>Webcam — head</option>
+        <option value="headvideo">Video file — head</option>
         <option value="gyro">Gyroscope — phone</option>
         <option value="mouse">Mouse — test</option>
         <option value="take">Recorded take</option>
       </select>
       <button id="tkStart" aria-pressed="false" title="Start / stop the selected source (T)">Start</button>
       <button id="tkCalib" title="Make the current head position / phone attitude the neutral, centred view (C)">Calibrate</button>
+      <button id="tkHeadPick" class="tk-hv" title="Choose the pre-recorded head video (loops)">Choose video…</button>
     </div>
     <div class="btns" style="margin-bottom:9px">
       <select id="tkMode" title="How the tracked position becomes a viewpoint">
@@ -695,6 +706,92 @@
       camera those produce, it never replaces them. Live tracking never reaches
       an export (it would not be reproducible); record a take for that.
       Paused automatically in Correct and while picking.
+    </p>
+  </details>
+
+  <!-- OVVO fork — motion transfer: a filmed camera move drives the virtual
+       camera. 2D = analysed from the pixels of any clip, applied as an offset;
+       3D = an imported solved camera track, played as the Path camera mode. -->
+  <details class="mod" data-group="motion" open>
+    <summary>Motion <em>video → camera</em><i class="gflag" id="vmFlag"></i></summary>
+
+    <div class="sub" style="margin-top:0; border-top:0; padding-top:0">From a video — 2D analysis</div>
+    <div class="btns" style="margin-bottom:9px">
+      <button id="vmLoad" title="Analyse the camera motion of a video clip (pan, tilt, roll, push in/out)">Load video…</button>
+      <select id="vmRate" title="Frames analysed per second of video">
+        <option value="15">15 /s</option>
+        <option value="30" selected>30 /s</option>
+        <option value="60">60 /s</option>
+      </select>
+      <button id="vmClear" title="Discard the analysed motion">Clear</button>
+    </div>
+    <p id="vmInfo" style="color:var(--ink-dim); margin:0 0 9px">No clip analysed.</p>
+    <canvas id="vmPlot" width="600" height="128" title="pan (signal) · tilt (edit) · roll (live) · push (ink)"></canvas>
+    <label class="check"><input type="checkbox" id="vmOn" checked> Drive the camera</label>
+    <div class="btns" style="margin-bottom:9px">
+      <select id="vmMode" title="How the filmed rotation is applied">
+        <option value="inplace" selected>In place — pan / tilt</option>
+        <option value="orbit">Around pivot — orbit</option>
+      </select>
+      <select id="vmBand" title="Which part of the motion to transfer">
+        <option value="full" selected>Full motion</option>
+        <option value="smooth">Smooth only (stabilised)</option>
+        <option value="shake">Shake only (handheld feel)</option>
+      </select>
+    </div>
+    <div class="row"><label>Rotation gain</label><output id="o-vmRot">—</output>
+      <input type="range" id="vmRot" min="-3" max="3" step="0.01" value="1"></div>
+    <div class="row"><label>Roll gain</label><output id="o-vmRoll">—</output>
+      <input type="range" id="vmRoll" min="-3" max="3" step="0.01" value="1"></div>
+    <div class="row"><label>Push gain</label><output id="o-vmDolly">—</output>
+      <input type="range" id="vmDolly" min="-3" max="3" step="0.01" value="1"></div>
+    <div class="row" title="Gaussian smoothing of the analysed curves, in frames — removes tracking jitter, not camera shake"><label>Clean (frames)</label><output id="o-vmClean">—</output>
+      <input type="range" id="vmClean" min="0" max="12" step="0.5" value="1.5"></div>
+    <div class="row" title="Where 'smooth' ends and 'shake' begins, in frames — only used by Smooth only / Shake only"><label>Shake split (frames)</label><output id="o-vmSplit">—</output>
+      <input type="range" id="vmSplit" min="2" max="90" step="1" value="15"></div>
+    <div class="row" title="Horizontal field of view of the camera that shot the clip. Turns pixel motion into angles."><label>Clip FOV (°)</label><output id="o-vmFov">—</output>
+      <input type="range" id="vmFov" min="10" max="130" step="1" value="65"></div>
+    <div class="btns" style="margin-bottom:4px">
+      <button id="vmMatchDur" title="Set the timeline Duration to the clip's length, so the motion plays at its real speed">Timeline = clip length</button>
+    </div>
+
+    <div class="sub">From a camera track — 3D import</div>
+    <div class="btns" style="margin-bottom:9px">
+      <button id="pathLoad" title="transforms.json (Nerfstudio / Instant-NGP…), COLMAP images.txt (+ cameras.txt), glTF / GLB with an animated camera (Blender, C4D, Houdini…), Nuke .chan — select several files at once for COLMAP">Load track…</button>
+      <button id="pathClear">Clear</button>
+    </div>
+    <p id="pathInfo" style="color:var(--ink-dim); margin:0 0 9px">No camera track.</p>
+    <div class="btns" style="margin-bottom:9px">
+      <select id="pathAlign" title="How the track is placed in this scene">
+        <option value="relative" selected>Relative to current camera</option>
+        <option value="splat">Splat space (same capture)</option>
+      </select>
+      <select id="pathWorld" class="path-splat" title="Axis convention fix between the track's world and the splat's">
+        <option value="none" selected>World as is</option>
+        <option value="undoNs">Nerfstudio → COLMAP</option>
+        <option value="zup">Z-up → Y-up</option>
+        <option value="yup">Y-up → Z-up</option>
+      </select>
+      <button id="pathAnchor" class="path-rel" title="Start the track from where the camera is now">Re-anchor here</button>
+    </div>
+    <div class="row path-rel" title="Track size, relative to an automatic fit (the whole move spans about one scene radius at ×1)"><label>Scale</label><output id="o-pathScale">—</output>
+      <input type="range" id="pathScale" min="-2" max="2" step="0.01" value="0"></div>
+    <div class="row" title="Frame rate of the track — sets its real length for .chan and image-sequence tracks"><label>Track fps</label><output id="o-pathFps">—</output>
+      <input type="range" id="pathFps" min="1" max="120" step="1" value="30"></div>
+    <label class="check"><input type="checkbox" id="pathUseFov" checked> Use the track's field of view</label>
+    <div class="btns" style="margin-bottom:9px">
+      <button id="pathPlay" title="Switch the Camera section to Path">Use as camera</button>
+      <button id="pathMatchDur" title="Set the timeline Duration to the track's length">Timeline = track length</button>
+    </div>
+    <div class="row"><label>Bake keys</label><output id="o-pathKeys">—</output>
+      <input type="range" id="pathKeys" min="2" max="64" step="1" value="16"></div>
+    <div class="btns">
+      <button id="pathBake" title="Replace the camera keyframes with evenly spaced samples of the track, then switch to Keyframes — editable with the usual tools (roll is lost: keyframes are position + target)">Bake to keyframes</button>
+    </div>
+    <p style="color:var(--ink-dim); margin:8px 0 0">
+      2D motion is an offset on top of every camera mode and reaches the export.
+      A 3D track is a camera mode of its own (Path). Both stretch over the timeline —
+      use the "Timeline =" buttons for real-time speed. Head tracking still layers on top.
     </p>
   </details>
 
@@ -1158,6 +1255,9 @@
 
 <input type="file" id="file" accept=".ply,.spz,.splat,.ksplat,.sog,.zip,.rad" hidden>
 <input type="file" id="presetFile" accept=".json,application/json" hidden>
+<input type="file" id="vmFile" accept="video/*,.mp4,.mov,.m4v,.webm,.mkv" hidden>
+<input type="file" id="tkHeadFile" accept="video/*,.mp4,.mov,.m4v,.webm,.mkv" hidden>
+<input type="file" id="pathFile" accept=".json,.txt,.gltf,.glb,.chan,application/json,text/plain" multiple hidden>
 <!-- iOS Safari greys out everything in Files when `accept` is a bare
      `audio/*` wildcard — it matches against the system UTI rather than the
      extension, so ordinary .wav/.mp3/.aiff on disk fail the filter. Listing
@@ -4423,6 +4523,7 @@ function sampleOrbit(t) {
 function evaluateCamera(t) {
   if (camMode === "manual") return null;
   if (camMode === "keyframes") return CAMKEYS.length === 0 ? null : sampleCam(t);
+  if (camMode === "path") return pathEvaluate(t);       // OVVO fork — imported 3D track
   return sampleOrbit(t);
 }
 
@@ -4877,6 +4978,8 @@ function setCamMode(mode) {
   $("camKeyCount").style.display = mode === "keyframes" ? "" : "none";
   $("camRow").style.display = mode === "keyframes" ? "" : "none";
   $("camOrbitRows").style.display = mode === "orbit" ? "" : "none";
+  $("camPathHint").style.display = mode === "path" ? "" : "none";
+  if (mode === "path") $("camKeyBtns").style.display = "none";
   driveCamera();            // force-write: switching mode should snap to the curve immediately, not wait for a scrub
   pushUniforms();
 }
@@ -5051,6 +5154,8 @@ let tkSaved = null;
 const tkVideo = $("tkVideo"), tkPrev = $("tkPreview"), tkPrevCtx = tkPrev.getContext("2d");
 
 function tkSetInfo(msg) { TK.info = msg; $("tkInfo").textContent = msg; }
+const tkIsVideoSrc = () => TK.source === "webcam" || TK.source === "headvideo";
+let tkHeadUrl = null, tkHeadName = "";
 
 /* --- input ---------------------------------------------------------- */
 function tkPushSample(x, y, z) {
@@ -5096,7 +5201,7 @@ function tkOnFace(lm, W, H) {
 }
 
 function tkDrawPreview(dot) {
-  if (!TK.showCam || TK.source !== "webcam" || !TK.running) { tkPrev.classList.add("hide"); return; }
+  if (!TK.showCam || !tkIsVideoSrc() || !TK.running) { tkPrev.classList.add("hide"); return; }
   tkPrev.classList.remove("hide");
   const w = tkPrev.width, h = tkPrev.height;
   tkPrevCtx.save();
@@ -5115,7 +5220,7 @@ function tkDrawPreview(dot) {
 }
 
 function tkVideoFrame() {
-  if (!TK.running || TK.source !== "webcam" || !tkLandmarker) return;
+  if (!TK.running || !tkIsVideoSrc() || !tkLandmarker) return;
   const now = performance.now();
   let dot = null;
   try {
@@ -5126,16 +5231,44 @@ function tkVideoFrame() {
   TK._fpsN++;
   if (now - TK._fpsT > 1000) {
     TK.fps = (TK._fpsN * 1000) / (now - TK._fpsT); TK._fpsN = 0; TK._fpsT = now;
-    tkSetInfo(`Webcam · ${TK.fps.toFixed(0)} fps · ${dot ? "face locked" : "no face"}${TK.calib ? "" : " · calibrating"}`);
+    tkSetInfo(`${TK.source === "webcam" ? "Webcam" : "Head video " + tkHeadName} · ${TK.fps.toFixed(0)} fps · ${dot ? "face locked" : "no face"}${TK.calib ? "" : " · calibrating"}`);
   }
   tkDrawPreview(dot);
   tkScheduleVideo();
 }
 function tkScheduleVideo() {
-  if (!TK.running || TK.source !== "webcam") return;
+  if (!TK.running || !tkIsVideoSrc()) return;
   if (tkVideo.requestVideoFrameCallback) tkVidCb = tkVideo.requestVideoFrameCallback(tkVideoFrame);
   else tkVidCb = requestAnimationFrame(tkVideoFrame);
 }
+
+/* Pre-recorded head: the same Face Landmarker pipeline, fed from a looping
+   file instead of the camera — for rehearsing without sitting in front of
+   the screen, or replaying a visitor's path. Mirroring depends on how the
+   clip was recorded; Invert X fixes it. */
+async function tkStartHeadVideo() {
+  if (!tkHeadUrl) throw new Error("choose a head video first");
+  tkVideo.srcObject = null;
+  tkVideo.src = tkHeadUrl;
+  tkVideo.loop = true;
+  await tkVideo.play();
+  await tkLoadLandmarker();
+  if (!TK.running) return;
+  TK._fpsT = performance.now(); TK._fpsN = 0;
+  tkSetInfo(`Head video ${tkHeadName} · looking for a face…`);
+  tkScheduleVideo();
+}
+$("tkHeadPick").onclick = () => $("tkHeadFile").click();
+$("tkHeadFile").onchange = (e) => {
+  const f = e.target.files?.[0];
+  e.target.value = "";
+  if (!f) return;
+  if (tkHeadUrl) URL.revokeObjectURL(tkHeadUrl);
+  tkHeadUrl = URL.createObjectURL(f);
+  tkHeadName = f.name;
+  TK.source = "headvideo";
+  tkStart();
+};
 
 async function tkStartWebcam() {
   if (!navigator.mediaDevices?.getUserMedia) throw new Error("no camera API — the page must be served over https or localhost");
@@ -5188,6 +5321,10 @@ async function tkStart() {
   tkRefreshUI();
   try {
     if (TK.source === "webcam") await tkStartWebcam();
+    else if (TK.source === "headvideo") {
+      if (!tkHeadUrl) { TK.running = false; tkRefreshUI(); $("tkHeadFile").click(); return; }
+      await tkStartHeadVideo();
+    }
     else if (TK.source === "gyro") await tkStartGyro();
     else if (TK.source === "mouse") { stage.addEventListener("pointermove", tkOnMouse); tkSetInfo("Mouse · move over the viewport"); }
     else if (TK.source === "take") tkSetInfo(TK.take ? "Playing the recorded take along the timeline" : "No take recorded yet — Record take first");
@@ -5203,7 +5340,9 @@ function tkStop() {
   TK.rec = false;
   if (tkStream) { for (const t of tkStream.getTracks()) t.stop(); tkStream = null; }
   if (tkVideo.cancelVideoFrameCallback && tkVidCb) tkVideo.cancelVideoFrameCallback(tkVidCb);
+  tkVideo.pause();
   tkVideo.srcObject = null;
+  if (tkVideo.getAttribute("src")) { tkVideo.removeAttribute("src"); tkVideo.load(); }
   removeEventListener("deviceorientation", tkOnOrient);
   stage.removeEventListener("pointermove", tkOnMouse);
   TK.present = false;
@@ -5299,8 +5438,7 @@ function tkApply(h) {
   const hz = h.z * TK.depth;
   if (Math.abs(hx) + Math.abs(hy) + Math.abs(hz) < 1e-6) return false;
 
-  camera.updateMatrixWorld();
-  tkSaved = { pos: camera.position.clone(), quat: camera.quaternion.clone() };
+  camSave();
   const f = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
   const r = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
   const u = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
@@ -5333,6 +5471,15 @@ function tkApply(h) {
     camera.coordinateSystem, camera.reversedDepth);
   camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
   return true;
+}
+
+/* Every camera offset layer (path orientation, 2D motion, head) calls this
+   before touching the camera; only the FIRST call in a frame snapshots, so
+   one tkRestore() puts back the untouched authored pose however many layers
+   ran. */
+function camSave() {
+  if (!tkSaved) tkSaved = { pos: camera.position.clone(), quat: camera.quaternion.clone() };
+  camera.updateMatrixWorld();
 }
 
 function tkRestore() {
@@ -5434,6 +5581,889 @@ function tkApplyPreset(o) {
 tkRefreshUI();
 
 /* ------------------------------------------------------------------ *
+ * Motion transfer — a filmed camera move drives the virtual camera
+ * (OVVO fork)
+ *
+ * Two independent routes, both sampled from the normalised playhead so they
+ * scrub, loop and export exactly like every other driven value here:
+ *
+ * 1. VM — 2D analysis of any clip, in the browser. Sparse pyramidal
+ *    Lucas-Kanade between consecutive frames, forward-backward checked, then
+ *    a RANSAC similarity fit (translate + rotate + uniform scale) of the
+ *    whole frame. Integrated into pan / tilt / roll angles and a push-in
+ *    log-scale, applied as an OFFSET layer (same save/restore discipline as
+ *    head tracking). It cannot tell a pan from a sideways travel — it is a
+ *    feel transfer, not a solve.
+ *
+ * 2. PATH — an imported, already-solved 3D camera track, played as a camera
+ *    MODE ("Path", next to Manual / Keyframes / Orbit). Position + target
+ *    come out of evaluateCamera() like every other mode; the exact
+ *    orientation (roll included) is restored in the offset stage as long as
+ *    nothing has orbited the camera away from the track.
+ *
+ * Internal camera convention for imported poses: camera-to-world 4x4,
+ * OpenGL camera (x right, y up, looking down -z) — the same as three.js.
+ * ------------------------------------------------------------------ */
+
+/* ===== 1. 2D video motion ============================================ */
+const VM_W = 320;                 // analysis width, px
+const VM_LEVELS = 3, VM_WIN = 6, VM_ITERS = 12, VM_MAXPTS = 260;
+
+const VM = {
+  on: true, mode: "inplace", band: "full",
+  rot: 1, roll: 1, dolly: 1, clean: 1.5, split: 15, fov: 65,
+  rate: 30,
+  name: "", duration: 0,
+  raw: null,          // { dx, dy, rot, ls, ok } per-frame deltas at analysis res (Float32Array each), frame 0 = 0
+  proc: null,         // { p, t, r, d } processed cumulative curves (radians / log-scale)
+  busy: false,
+};
+
+/* --- image pyramid with gradients ----------------------------------- */
+function vmLevel(w, h, data) {
+  const gx = new Float32Array(w * h), gy = new Float32Array(w * h);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      gx[i] = (data[i + 1] - data[i - 1]) * 0.5;
+      gy[i] = (data[i + w] - data[i - w]) * 0.5;
+    }
+  }
+  return { w, h, data, gx, gy };
+}
+function vmPyramid(gray, w, h) {
+  const out = [vmLevel(w, h, gray)];
+  for (let l = 1; l < VM_LEVELS; l++) {
+    const p = out[l - 1], nw = p.w >> 1, nh = p.h >> 1, d = new Float32Array(nw * nh);
+    for (let y = 0; y < nh; y++) {
+      for (let x = 0; x < nw; x++) {
+        const i = 2 * y * p.w + 2 * x;
+        d[y * nw + x] = (p.data[i] + p.data[i + 1] + p.data[i + p.w] + p.data[i + p.w + 1]) * 0.25;
+      }
+    }
+    out.push(vmLevel(nw, nh, d));
+  }
+  return out;
+}
+function vmSample(arr, w, h, x, y) {
+  if (x < 0) x = 0; else if (x > w - 1.001) x = w - 1.001;
+  if (y < 0) y = 0; else if (y > h - 1.001) y = h - 1.001;
+  const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, i = y0 * w + x0;
+  const a = arr[i] + (arr[i + 1] - arr[i]) * fx;
+  const b = arr[i + w] + (arr[i + w + 1] - arr[i + w]) * fx;
+  return a + (b - a) * fy;
+}
+
+/* Shi-Tomasi corners on a coarse grid — the grid itself enforces spacing. */
+function vmFeatures(L0) {
+  const { w, h, gx, gy } = L0, step = 8, m = 16, r = 3, cand = [];
+  for (let y = m; y < h - m; y += step) {
+    for (let x = m; x < w - m; x += step) {
+      let xx = 0, xy = 0, yy = 0;
+      for (let j = -r; j <= r; j++) {
+        for (let i = -r; i <= r; i++) {
+          const k = (y + j) * w + x + i, a = gx[k], b = gy[k];
+          xx += a * a; xy += a * b; yy += b * b;
+        }
+      }
+      const tr = xx + yy, det = xx * yy - xy * xy;
+      const minEig = tr / 2 - Math.sqrt(Math.max(tr * tr / 4 - det, 0));
+      cand.push([minEig, x, y]);
+    }
+  }
+  cand.sort((a, b) => b[0] - a[0]);
+  const thr = (cand[0]?.[0] ?? 0) * 0.02;
+  return cand.filter((c) => c[0] > thr && c[0] > 1).slice(0, VM_MAXPTS).map((c) => [c[1], c[2]]);
+}
+
+/* Pyramidal LK, template gradients (inverse-compositional style: the
+   template patch and its gradients are sampled ONCE per level, only the
+   target is re-sampled per iteration). Returns the level-0 displacement
+   [dx, dy], or null if the window is textureless. */
+const VM_WN = (2 * VM_WIN + 1) ** 2;
+const _vT = new Float32Array(VM_WN), _vX = new Float32Array(VM_WN), _vY = new Float32Array(VM_WN);
+function vmLK(A, B, x, y) {
+  let gx = 0, gy = 0;
+  for (let l = VM_LEVELS - 1; l >= 0; l--) {
+    const P = A[l], N = B[l], s = 1 << l, px = x / s, py = y / s;
+    let ixx = 0, ixy = 0, iyy = 0, k = 0;
+    for (let j = -VM_WIN; j <= VM_WIN; j++) {
+      for (let i = -VM_WIN; i <= VM_WIN; i++, k++) {
+        const a = vmSample(P.gx, P.w, P.h, px + i, py + j), b = vmSample(P.gy, P.w, P.h, px + i, py + j);
+        _vX[k] = a; _vY[k] = b; _vT[k] = vmSample(P.data, P.w, P.h, px + i, py + j);
+        ixx += a * a; ixy += a * b; iyy += b * b;
+      }
+    }
+    const det = ixx * iyy - ixy * ixy;
+    if (det < 1e-6) return null;
+    let vx = 0, vy = 0;
+    for (let it = 0; it < VM_ITERS; it++) {
+      let bx = 0, by = 0, kk = 0;
+      const ox = px + gx + vx, oy = py + gy + vy;
+      for (let j = -VM_WIN; j <= VM_WIN; j++) {
+        for (let i = -VM_WIN; i <= VM_WIN; i++, kk++) {
+          const e = vmSample(N.data, N.w, N.h, ox + i, oy + j) - _vT[kk];
+          bx += e * _vX[kk]; by += e * _vY[kk];
+        }
+      }
+      const dvx = -(iyy * bx - ixy * by) / det, dvy = -(-ixy * bx + ixx * by) / det;
+      vx += dvx; vy += dvy;
+      if (dvx * dvx + dvy * dvy < 1e-4) break;
+    }
+    if (l > 0) { gx = 2 * (gx + vx); gy = 2 * (gy + vy); }
+    else { gx += vx; gy += vy; }
+  }
+  return [gx, gy];
+}
+
+/* Similarity q = z p + t (complex z = a + ib), RANSAC then least squares. */
+function vmFitSimilarity(P, Q) {
+  const n = P.length;
+  if (n < 6) return null;
+  const solve2 = (i, j) => {
+    const dpx = P[j][0] - P[i][0], dpy = P[j][1] - P[i][1];
+    const dqx = Q[j][0] - Q[i][0], dqy = Q[j][1] - Q[i][1];
+    const den = dpx * dpx + dpy * dpy;
+    if (den < 4) return null;
+    const a = (dqx * dpx + dqy * dpy) / den, b = (dqy * dpx - dqx * dpy) / den;
+    return { a, b, tx: Q[i][0] - (a * P[i][0] - b * P[i][1]), ty: Q[i][1] - (b * P[i][0] + a * P[i][1]) };
+  };
+  const resid = (m, k) => {
+    const ex = m.a * P[k][0] - m.b * P[k][1] + m.tx - Q[k][0];
+    const ey = m.b * P[k][0] + m.a * P[k][1] + m.ty - Q[k][1];
+    return ex * ex + ey * ey;
+  };
+  let best = null, bestIn = null;
+  let seed = 1234567;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);   // deterministic: same clip, same curves
+  for (let it = 0; it < 120; it++) {
+    const i = (rnd() * n) | 0, j = (rnd() * n) | 0;
+    if (i === j) continue;
+    const m = solve2(i, j);
+    if (!m) continue;
+    const inl = [];
+    for (let k = 0; k < n; k++) if (resid(m, k) < 1.0) inl.push(k);
+    if (!bestIn || inl.length > bestIn.length) { best = m; bestIn = inl; }
+  }
+  if (!bestIn || bestIn.length < Math.max(6, n * 0.25)) return null;
+  let mpx = 0, mpy = 0, mqx = 0, mqy = 0;
+  for (const k of bestIn) { mpx += P[k][0]; mpy += P[k][1]; mqx += Q[k][0]; mqy += Q[k][1]; }
+  const c = bestIn.length; mpx /= c; mpy /= c; mqx /= c; mqy /= c;
+  let sa = 0, sb = 0, sd = 0;
+  for (const k of bestIn) {
+    const px = P[k][0] - mpx, py = P[k][1] - mpy, qx = Q[k][0] - mqx, qy = Q[k][1] - mqy;
+    sa += px * qx + py * qy; sb += px * qy - py * qx; sd += px * px + py * py;
+  }
+  if (sd < 1e-6) return best;
+  const a = sa / sd, b = sb / sd;
+  return { a, b, tx: mqx - (a * mpx - b * mpy), ty: mqy - (b * mpx + a * mpy), inliers: c };
+}
+
+/* One frame pair -> {dx, dy, rot, ls} in analysis pixels / radians. */
+function vmPairMotion(A, B) {
+  const L0 = A[0], cx = L0.w / 2, cy = L0.h / 2;
+  const feats = vmFeatures(L0), P = [], Q = [];
+  for (const [x, y] of feats) {
+    const d = vmLK(A, B, x, y);
+    if (!d) continue;
+    const back = vmLK(B, A, x + d[0], y + d[1]);       // forward-backward consistency
+    if (!back || (back[0] + d[0]) ** 2 + (back[1] + d[1]) ** 2 > 0.25) continue;
+    P.push([x - cx, y - cy]);
+    Q.push([x + d[0] - cx, y + d[1] - cy]);
+  }
+  const m = vmFitSimilarity(P, Q);
+  if (!m) return null;
+  return { dx: m.tx, dy: m.ty, rot: Math.atan2(m.b, m.a), ls: Math.log(Math.hypot(m.a, m.b)) };
+}
+
+const vmVideo = document.createElement("video");
+vmVideo.muted = true; vmVideo.playsInline = true; vmVideo.preload = "auto";
+const vmCanvas = document.createElement("canvas");
+const vmCtx = vmCanvas.getContext("2d", { willReadFrequently: true });
+
+/* Frame stepping by play -> first presented frame -> pause, rather than by
+   seeking: some Chromium builds (headless, some GPU-less machines) never
+   repaint a paused video after a seek, so drawImage keeps returning the old
+   frame and the analysis silently reads a static clip. Playback always
+   presents. Each step's real media time is recorded, so any frame the decoder
+   skips is simply a longer step, and the curves are resampled onto a uniform
+   grid afterwards. */
+function vmSeekTo(t) {
+  return new Promise((resolve) => {
+    if (Math.abs(vmVideo.currentTime - t) < 1e-6 && vmVideo.readyState >= 2) { resolve(); return; }
+    const done = () => resolve();
+    vmVideo.addEventListener("seeked", done, { once: true });
+    setTimeout(done, 3000);              // a seek that never reports must not hang the analysis
+    vmVideo.currentTime = t;
+  });
+}
+/* Does this browser repaint a paused video after a seek? Two frames far apart
+   must differ — if they are bit-identical, assume not and step by playback.
+   (A truly static clip lands here too, which costs nothing but speed.) */
+async function vmSeekWorks(dur) {
+  await vmSeekTo(0);
+  const a = vmGrab();
+  await vmSeekTo(Math.min(dur * 0.5, 1));
+  const b = vmGrab();
+  for (let i = 0; i < a.length; i += 7) if (a[i] !== b[i]) return true;
+  return false;
+}
+
+function vmNextFrame() {
+  return new Promise((resolve) => {
+    let done = false;
+    const fin = (t) => { if (!done) { done = true; resolve(t); } };
+    if (vmVideo.requestVideoFrameCallback) vmVideo.requestVideoFrameCallback((now, md) => fin(md.mediaTime));
+    else requestAnimationFrame(() => fin(vmVideo.currentTime));
+    vmVideo.addEventListener("ended", () => fin(null), { once: true });
+    vmVideo.play().catch(() => fin(null));
+  });
+}
+function vmGrab() {
+  vmCtx.drawImage(vmVideo, 0, 0, vmCanvas.width, vmCanvas.height);
+  const d = vmCtx.getImageData(0, 0, vmCanvas.width, vmCanvas.height).data;
+  const g = new Float32Array(vmCanvas.width * vmCanvas.height);
+  for (let i = 0, j = 0; i < g.length; i++, j += 4) g[i] = 0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2];
+  return g;
+}
+
+/* Analyse a clip. `src` is a File/Blob or a URL. Frames are reached by
+   seeking, not by playing — slower, but every frame is visited exactly once
+   whatever the machine, so the curves do not depend on decode speed. */
+async function vmAnalyse(src, name) {
+  if (VM.busy) return;
+  VM.busy = true;
+  const url = typeof src === "string" ? src : URL.createObjectURL(src);
+  try {
+    vmSetInfo(`Opening ${name}…`);
+    vmVideo.src = url;
+    await new Promise((res, rej) => {
+      vmVideo.onloadeddata = () => res();
+      vmVideo.onerror = () => rej(new Error("this browser cannot decode the clip (try H.264 MP4)"));
+    });
+    const dur = vmVideo.duration;
+    if (!Number.isFinite(dur) || dur <= 0) throw new Error("clip has no duration");
+    const w = VM_W, h = Math.max(32, Math.round((VM_W * vmVideo.videoHeight) / vmVideo.videoWidth));
+    vmCanvas.width = w; vmCanvas.height = h;
+    /* Playback rate trades speed for coverage: slower playback means the
+       decoder presents more of the frames while we are busy analysing. */
+    const seekMode = await vmSeekWorks(dur);
+    vmVideo.playbackRate = VM.rate >= 60 ? 0.25 : VM.rate >= 30 ? 0.5 : 1;
+    if (!seekMode) await vmSeekTo(0);
+    const nSeek = Math.max(2, Math.floor(dur * VM.rate) + 1);
+    const ts = [0], cum = { dx: [0], dy: [0], rot: [0], ls: [0] };
+    let prev = null, prevT = 0, lost = 0, steps = 0;
+    const t0 = performance.now(), minStep = 1 / VM.rate - 1e-4;
+    for (let si = 0; ; si++) {
+      let mt;
+      if (seekMode) {
+        if (si >= nSeek) break;
+        mt = Math.min(si / VM.rate, dur - 1e-3);
+        await vmSeekTo(mt);
+      } else {
+        mt = await vmNextFrame();
+        vmVideo.pause();
+        if (mt == null) break;
+      }
+      if (prev && mt - prevT < minStep) continue;          // closer than the analysis rate: skip
+      const pyr = vmPyramid(vmGrab(), w, h);
+      if (prev) {
+        const m = vmPairMotion(prev, pyr);
+        const L = cum.dx.length - 1;
+        if (!m) lost++;
+        cum.dx.push(cum.dx[L] + (m?.dx ?? 0)); cum.dy.push(cum.dy[L] + (m?.dy ?? 0));
+        cum.rot.push(cum.rot[L] + (m?.rot ?? 0)); cum.ls.push(cum.ls[L] + (m?.ls ?? 0));
+        ts.push(mt);
+      } else {
+        ts[0] = mt;
+      }
+      prev = pyr; prevT = mt; steps++;
+      if (steps % 5 === 0) {
+        const el = (performance.now() - t0) / 1000, frac = Math.min(mt / dur, 1);
+        vmSetInfo(`Analysing ${name} — ${Math.round(frac * 100)}% · ${frac > 0.02 ? ((el / frac) * (1 - frac)).toFixed(0) + " s left" : "…"}`);
+      }
+      if (!seekMode && mt >= dur - 1e-3) break;
+    }
+    /* Uniform grid at the analysis rate, from the cumulative curves, then back
+       to per-step deltas — the shape vmProcess() integrates. */
+    const n = Math.max(2, Math.floor(dur * VM.rate) + 1);
+    const raw = { dx: new Float32Array(n), dy: new Float32Array(n), rot: new Float32Array(n), ls: new Float32Array(n), ok: new Uint8Array(n).fill(1) };
+    let j = 0;
+    const res = (key, t) => {
+      while (j < ts.length - 2 && ts[j + 1] <= t) j++;
+      const a = ts[j], b = ts[Math.min(j + 1, ts.length - 1)], u = b > a ? clampNum((t - a) / (b - a), 0, 1) : 0;
+      const c = cum[key];
+      return c[j] + (c[Math.min(j + 1, c.length - 1)] - c[j]) * u;
+    };
+    for (const key of ["dx", "dy", "rot", "ls"]) {
+      j = 0;
+      let last = 0;
+      for (let i = 0; i < n; i++) { const v = res(key, i / VM.rate); raw[key][i] = i ? v - last : 0; last = v; }
+    }
+    VM.raw = { ...raw, w, h };
+    VM.name = name; VM.duration = dur;
+    vmProcess();
+    vmSetInfo(`${name} · ${dur.toFixed(1)} s · ${steps} frames analysed${lost ? ` · ${lost} untracked (held)` : ""}`);
+    setStatus(`Motion analysed from ${name}.`);
+  } catch (e) {
+    vmSetInfo("Analysis failed: " + (e?.message ?? e));
+    setStatus("Motion: " + (e?.message ?? e), true);
+  } finally {
+    VM.busy = false;
+    vmVideo.removeAttribute("src"); vmVideo.load();
+    if (typeof src !== "string") URL.revokeObjectURL(url);
+    vmRefreshUI();
+  }
+}
+
+function vmGauss(a, sigma) {
+  if (!(sigma > 0.05)) return Float32Array.from(a);
+  const n = a.length, r = Math.ceil(sigma * 3), k = [];
+  let ks = 0;
+  for (let i = -r; i <= r; i++) { const v = Math.exp(-(i * i) / (2 * sigma * sigma)); k.push(v); ks += v; }
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let j = -r; j <= r; j++) s += a[Math.min(n - 1, Math.max(0, i + j))] * k[j + r];   // clamp at the ends
+    out[i] = s / ks;
+  }
+  return out;
+}
+
+/* deltas -> cumulative camera curves -> clean -> band split */
+function vmProcess() {
+  const R = VM.raw;
+  if (!R) { VM.proc = null; vmDrawPlot(); return; }
+  const n = R.dx.length;
+  const f = (R.w / 2) / Math.tan((VM.fov * Math.PI) / 360);
+  const p = new Float32Array(n), t = new Float32Array(n), r = new Float32Array(n), d = new Float32Array(n);
+  for (let i = 1; i < n; i++) {
+    /* Content moving left = the camera turned right; content moving down =
+       the camera tilted up; content turning clockwise (y-down image) = the
+       camera rolled counter-clockwise; content growing = pushing in. */
+    p[i] = p[i - 1] - Math.atan(R.dx[i] / f);
+    t[i] = t[i - 1] + Math.atan(R.dy[i] / f);
+    r[i] = r[i - 1] + R.rot[i];
+    d[i] = d[i - 1] + R.ls[i];
+  }
+  const band = (a) => {
+    const c = vmGauss(a, VM.clean);
+    if (VM.band === "full") return c;
+    const lp = vmGauss(c, VM.split);
+    if (VM.band === "smooth") return lp;
+    for (let i = 0; i < n; i++) c[i] -= lp[i];
+    return c;
+  };
+  const out = { p: band(p), t: band(t), r: band(r), d: band(d) };
+  if (VM.band !== "shake") {
+    for (const k of ["p", "t", "r", "d"]) { const z = out[k][0]; for (let i = 0; i < n; i++) out[k][i] -= z; }   // start on the authored camera
+  }
+  VM.proc = out;
+  vmDrawPlot();
+}
+
+function vmAt(tn) {
+  const P = VM.proc;
+  if (!P) return null;
+  const n = P.p.length, x = Math.min(Math.max(tn, 0), 1) * (n - 1), i = Math.floor(x), j = Math.min(i + 1, n - 1), u = x - i;
+  const L = (a) => a[i] + (a[j] - a[i]) * u;
+  return { p: L(P.p), t: L(P.t), r: L(P.r), d: L(P.d) };
+}
+
+/* Offset layer. Runs after controls.update(), before head tracking. */
+function vmApply(tn) {
+  if (!VM.on || !VM.proc || correcting || pickOn) return false;
+  const m = vmAt(tn);
+  const pan = m.p * VM.rot, tilt = m.t * VM.rot, roll = m.r * VM.roll, push = m.d * VM.dolly;
+  if (Math.abs(pan) + Math.abs(tilt) + Math.abs(roll) + Math.abs(push) < 1e-7) return false;
+  camSave();
+  const f = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+  const dist = Math.max(controls.target.clone().sub(camera.position).dot(f), radius * 0.05, 1e-3);
+  if (VM.mode === "orbit") {
+    const r = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+    const u = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+    const v = camera.position.clone().sub(controls.target), len = v.length();
+    const a = clampNum(pan, -Math.PI * 0.95, Math.PI * 0.95), b = clampNum(tilt, -1.4, 1.4);
+    const v1 = v.clone().multiplyScalar(Math.cos(a)).addScaledVector(r, len * Math.sin(a));
+    const v2 = v1.clone().multiplyScalar(Math.cos(b)).addScaledVector(u, len * Math.sin(b));
+    v2.setLength(len * clampNum(Math.exp(-push), 0.05, 20));
+    camera.position.copy(controls.target).add(v2);
+    camera.lookAt(controls.target);
+    camera.rotateZ(roll);
+  } else {
+    camera.quaternion.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(tilt, -pan, roll, "YXZ")));
+    camera.position.addScaledVector(f, dist * (1 - clampNum(Math.exp(-push), 0.02, 50)));
+  }
+  camera.updateMatrixWorld();
+  return true;
+}
+
+function vmSetInfo(msg) { $("vmInfo").textContent = msg; }
+
+function vmDrawPlot() {
+  const c = $("vmPlot"), g = c.getContext("2d"), W = c.width, H = c.height;
+  g.clearRect(0, 0, W, H);
+  const css = getComputedStyle(document.documentElement);
+  g.strokeStyle = css.getPropertyValue("--rule"); g.beginPath(); g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke();
+  const P = VM.proc;
+  if (P) {
+    const curves = [[P.p, "--signal"], [P.t, "--edit"], [P.r, "--live"], [P.d, "--ink-dim"]];
+    let m = 1e-6;
+    for (const [a] of curves) for (let i = 0; i < a.length; i++) m = Math.max(m, Math.abs(a[i]));
+    for (const [a, col] of curves) {
+      g.strokeStyle = css.getPropertyValue(col); g.lineWidth = 1.5; g.beginPath();
+      for (let i = 0; i < a.length; i++) {
+        const x = (i / (a.length - 1)) * W, y = H / 2 - (a[i] / m) * (H / 2 - 4);
+        i ? g.lineTo(x, y) : g.moveTo(x, y);
+      }
+      g.stroke();
+    }
+  }
+  g.strokeStyle = css.getPropertyValue("--ink"); g.lineWidth = 1;
+  const x = playhead * W; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke();
+}
+
+/* ===== 2. imported 3D camera track ==================================== */
+const PATH = {
+  name: "", duration: 0, fpsUsed: false,
+  samples: null,      // [{ t (0..1), pos: Vector3, quat: Quaternion, fov|null }] — source space, OpenGL camera
+  align: "relative", world: "none", scale: 0, fps: 30, useFov: true, keys: 16,
+  applied: null,      // Matrix4 from a transforms.json "applied_transform", if any
+  anchor: null,       // Matrix4 — camera base pose the track starts from (relative mode)
+  auto: 1,            // auto scale for relative mode
+  focusD: 1,          // distance from the camera to the look-at target, world units
+};
+const CV2GL = new THREE.Matrix4().makeScale(1, -1, -1);   // OpenCV camera (y down, +z forward) <-> OpenGL
+
+function naturalKey(name) {
+  const m = String(name).match(/(\d+)(?!.*\d)/);
+  return m ? parseInt(m[1], 10) : NaN;
+}
+
+/* Every parser returns { frames: [{ key, m: Matrix4 c2w GL, fov|null }], seconds|null, applied? } */
+function parseTransformsJson(o) {
+  if (!Array.isArray(o?.frames) || !o.frames.length) throw new Error("no frames[] in this JSON");
+  const vfovOf = (fr) => {
+    const fy = fr.fl_y ?? o.fl_y ?? fr.fl_x ?? o.fl_x, h = fr.h ?? o.h, w = fr.w ?? o.w;
+    if (fy && h) return (2 * Math.atan(h / (2 * fy)) * 180) / Math.PI;
+    if (o.camera_angle_y) return (o.camera_angle_y * 180) / Math.PI;
+    if (o.camera_angle_x && w && h) return (2 * Math.atan(Math.tan(o.camera_angle_x / 2) * (h / w)) * 180) / Math.PI;
+    return null;
+  };
+  const frames = o.frames.map((fr, i) => {
+    const T = fr.transform_matrix;
+    if (!Array.isArray(T) || T.length < 3) throw new Error("frame without transform_matrix");
+    const r = (k) => T[k] ?? [0, 0, 0, 1];
+    const m = new THREE.Matrix4().set(...r(0), ...r(1), ...r(2), ...r(3));
+    const k = naturalKey(fr.file_path ?? "");
+    return { key: Number.isFinite(k) ? k : i, m, fov: vfovOf(fr) };
+  });
+  let applied = null;
+  if (Array.isArray(o.applied_transform)) {
+    const A = o.applied_transform;
+    applied = new THREE.Matrix4().set(...A[0], ...A[1], ...A[2], ...(A[3] ?? [0, 0, 0, 1]));
+  }
+  return { frames, seconds: null, applied };
+}
+
+function parseColmapCameras(txt) {
+  const cams = {};
+  for (const line of txt.split(/\r?\n/)) {
+    if (!line.trim() || line.startsWith("#")) continue;
+    const t = line.trim().split(/\s+/);
+    const [id, model, , H] = t;
+    const p = t.slice(4).map(Number);
+    const fy = /^(PINHOLE|OPENCV|OPENCV_FISHEYE|FULL_OPENCV|FOV|THIN_PRISM_FISHEYE)$/.test(model) ? p[1] : p[0];
+    if (fy > 0 && +H > 0) cams[id] = (2 * Math.atan(+H / (2 * fy)) * 180) / Math.PI;
+  }
+  return cams;
+}
+function parseColmapImages(txt, cams) {
+  const frames = [];
+  /* Raw lines, NOT filtered: every image line is followed by a POINTS2D line
+     that is legitimately EMPTY when the image has no observations. */
+  const lines = txt.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].trim() || lines[i].startsWith("#")) continue;
+    const t = lines[i].trim().split(/\s+/);
+    if (t.length < 10 || !t.slice(1, 8).every((v) => Number.isFinite(+v))) continue;
+    const [, qw, qx, qy, qz, tx, ty, tz, camId] = t;
+    const name = t.slice(9).join(" ");
+    /* world->camera (OpenCV) to camera->world, then OpenCV -> OpenGL camera */
+    const w2c = new THREE.Matrix4().compose(new THREE.Vector3(+tx, +ty, +tz), new THREE.Quaternion(+qx, +qy, +qz, +qw), new THREE.Vector3(1, 1, 1));
+    const m = w2c.clone().invert().multiply(CV2GL);
+    const k = naturalKey(name);
+    frames.push({ key: Number.isFinite(k) ? k : frames.length, m, fov: cams?.[camId] ?? null });
+    i++;                                   // skip the POINTS2D line that follows every image line
+  }
+  if (!frames.length) throw new Error("no image poses in this images.txt");
+  return { frames, seconds: null };
+}
+
+function parseChan(txt) {
+  /* Nuke .chan: frame tx ty tz rx ry rz [vfov] — degrees, rotation order ZXY
+     (three's 'YXZ' is the same matrix), Y-up, camera looking down -z. */
+  const frames = [];
+  for (const line of txt.split(/\r?\n/)) {
+    const t = line.trim().split(/\s+/).map(Number);
+    if (t.length < 7 || !t.slice(0, 7).every(Number.isFinite)) continue;
+    const e = new THREE.Euler(...t.slice(4, 7).map(THREE.MathUtils.degToRad), "YXZ");
+    const m = new THREE.Matrix4().compose(new THREE.Vector3(t[1], t[2], t[3]), new THREE.Quaternion().setFromEuler(e), new THREE.Vector3(1, 1, 1));
+    frames.push({ key: t[0], m, fov: t.length >= 8 && t[7] > 1 && t[7] < 179 ? t[7] : null });
+  }
+  if (!frames.length) throw new Error("no frames in this .chan");
+  return { frames, seconds: "fps" };
+}
+
+async function parseGltf(buf) {
+  const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
+  const gltf = await new Promise((res, rej) => new GLTFLoader().parse(buf, "", res, rej));
+  let cam = gltf.cameras?.[0] ?? null;
+  if (!cam) gltf.scene.traverse((o) => { if (!cam && o.isCamera) cam = o; });
+  if (!cam) throw new Error("no camera in this glTF");
+  const dur = Math.max(0, ...gltf.animations.map((a) => a.duration));
+  const mixer = new THREE.AnimationMixer(gltf.scene);
+  for (const clip of gltf.animations) {
+    const act = mixer.clipAction(clip);
+    act.setLoop(THREE.LoopOnce, 1);      // LoopRepeat would wrap t = duration back to frame 0
+    act.clampWhenFinished = true;
+    act.play();
+  }
+  const n = dur > 0 ? Math.min(3000, Math.max(2, Math.round(dur * 60) + 1)) : 1;
+  const frames = [];
+  for (let i = 0; i < n; i++) {
+    mixer.setTime(n > 1 ? (i / (n - 1)) * dur : 0);
+    gltf.scene.updateMatrixWorld(true);
+    frames.push({ key: i, m: cam.matrixWorld.clone(), fov: cam.isPerspectiveCamera ? cam.fov : null });
+  }
+  return { frames, seconds: dur > 0 ? dur : null };
+}
+
+async function pathLoadFiles(files) {
+  try {
+    const list = [...files];
+    const byName = (re) => list.find((f) => re.test(f.name));
+    let res, label;
+    const glb = byName(/\.(glb|gltf)$/i), chan = byName(/\.chan$/i), json = byName(/\.json$/i), images = byName(/images\.txt$/i);
+    if (glb) { res = await parseGltf(await glb.arrayBuffer()); label = glb.name; }
+    else if (chan) { res = parseChan(await chan.text()); label = chan.name; }
+    else if (json) { res = parseTransformsJson(JSON.parse(await json.text())); label = json.name; }
+    else if (images) {
+      const camsF = byName(/cameras\.txt$/i);
+      res = parseColmapImages(await images.text(), camsF ? parseColmapCameras(await camsF.text()) : null);
+      label = images.name + (camsF ? " + cameras.txt" : "");
+    } else throw new Error("expected transforms.json, images.txt, .gltf/.glb or .chan");
+    pathSetFrames(res, label);
+  } catch (e) {
+    $("pathInfo").textContent = "Import failed: " + (e?.message ?? e);
+    setStatus("Camera track: " + (e?.message ?? e), true);
+  }
+}
+
+function pathSetFrames(res, label) {
+  const fr = res.frames.slice().sort((a, b) => a.key - b.key);
+  const k0 = fr[0].key, k1 = fr[fr.length - 1].key;
+  PATH.samples = fr.map((f) => {
+    const pos = new THREE.Vector3(), quat = new THREE.Quaternion(), sc = new THREE.Vector3();
+    f.m.decompose(pos, quat, sc);
+    return { t: k1 > k0 ? (f.key - k0) / (k1 - k0) : 0, pos, quat, fov: f.fov };
+  });
+  PATH.secondsFixed = typeof res.seconds === "number" ? res.seconds : null;
+  PATH.frameSpan = k1 - k0;
+  PATH.applied = res.applied ?? null;
+  PATH.name = label;
+  pathAnchor();
+  setCamMode("path");
+  pathRefreshUI();
+  setStatus(`Camera track loaded — ${PATH.samples.length} poses from ${label}.`);
+}
+
+function pathSeconds() {
+  if (!PATH.samples) return 0;
+  return PATH.secondsFixed ?? Math.max(PATH.frameSpan, 1) / PATH.fps;
+}
+
+/* The base camera pose right now — never an offset frame's pose, since every
+   offset is undone right after the render that used it. */
+function pathAnchor() {
+  if (!PATH.samples) return;
+  camera.updateMatrixWorld();
+  PATH.anchor = camera.matrixWorld.clone();
+  const s0 = PATH.samples[0];
+  let ext = 0;
+  for (const s of PATH.samples) ext = Math.max(ext, s.pos.distanceTo(s0.pos));
+  PATH.auto = ext > 1e-9 ? radius / ext : 1;
+  const f = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+  PATH.focusD = Math.max(controls.target.clone().sub(camera.position).dot(f), radius * 0.2);
+  if (PATH.align === "splat") pathFocusFromSplat();
+  driveCamera();
+}
+function pathFocusFromSplat() {
+  const w = pathWorldAt(0);
+  if (!w) return;
+  const f = new THREE.Vector3(0, 0, -1).applyQuaternion(w.quat);
+  const center = mesh ? new THREE.Vector3().setFromMatrixPosition(mesh.matrixWorld) : controls.target.clone();
+  PATH.focusD = Math.max(center.sub(w.pos).dot(f), radius * 0.2);
+}
+
+function pathWorldFix() {
+  switch (PATH.world) {
+    case "undoNs":
+      if (PATH.applied) return PATH.applied.clone().invert();
+      /* nerfstudio's default colmap->transforms.json world swap, undone */
+      return new THREE.Matrix4().set(0, 1, 0, 0, 1, 0, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1);
+    case "zup": return new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+    case "yup": return new THREE.Matrix4().makeRotationX(Math.PI / 2);
+    default: return new THREE.Matrix4();
+  }
+}
+
+/* World pose of the track at normalised time tn. */
+const _pm = new THREE.Matrix4(), _pm2 = new THREE.Matrix4();
+function pathWorldAt(tn) {
+  const S = PATH.samples;
+  if (!S?.length) return null;
+  let i = 0;
+  while (i < S.length - 2 && S[i + 1].t <= tn) i++;
+  const a = S[i], b = S[Math.min(i + 1, S.length - 1)];
+  const u = b.t > a.t ? clampNum((tn - a.t) / (b.t - a.t), 0, 1) : 0;
+  const pos = a.pos.clone().lerp(b.pos, u), quat = a.quat.clone().slerp(b.quat, u);
+  const fov = a.fov != null && b.fov != null ? a.fov + (b.fov - a.fov) * u : a.fov ?? b.fov;
+  let M;
+  if (PATH.align === "splat") {
+    _pm.compose(pos, quat, new THREE.Vector3(1, 1, 1));
+    M = (mesh ? mesh.matrixWorld.clone() : new THREE.Matrix4()).multiply(pathWorldFix()).multiply(_pm);
+  } else {
+    /* relative: inverse(first pose) * pose, translation scaled, then hung on the anchor */
+    const s0 = S[0];
+    _pm.compose(s0.pos, s0.quat, new THREE.Vector3(1, 1, 1)).invert();
+    _pm2.compose(pos, quat, new THREE.Vector3(1, 1, 1));
+    const rel = _pm.multiply(_pm2);
+    const k = PATH.auto * Math.pow(10, PATH.scale);
+    rel.elements[12] *= k; rel.elements[13] *= k; rel.elements[14] *= k;
+    M = (PATH.anchor ?? new THREE.Matrix4()).clone().multiply(rel);
+  }
+  const wp = new THREE.Vector3(), wq = new THREE.Quaternion(), ws = new THREE.Vector3();
+  M.decompose(wp, wq, ws);
+  return { pos: wp, quat: wq, fov };
+}
+
+/* evaluateCamera() branch for camMode "path" — {pos, tgt, fov?} like every mode. */
+function pathEvaluate(tn) {
+  const w = pathWorldAt(tn);
+  if (!w) return null;
+  const tgt = w.pos.clone().addScaledVector(new THREE.Vector3(0, 0, -1).applyQuaternion(w.quat), PATH.focusD);
+  const out = { pos: w.pos.toArray(), tgt: tgt.toArray() };
+  if (PATH.useFov && w.fov != null) out.fov = clampNum(w.fov, 5, 150);
+  return out;
+}
+
+/* Offset stage: restore the track's exact orientation (roll included), which
+   driveCamera()'s lookAt cannot express. Skipped as soon as the camera has
+   been orbited off the track, so manual exploration while paused still works. */
+function pathOrientApply(tn) {
+  if (camMode !== "path" || !PATH.samples || correcting || pickOn) return false;
+  const w = pathWorldAt(tn);
+  if (!w || camera.position.distanceTo(w.pos) > Math.max(radius * 0.002, 1e-4)) return false;
+  camSave();
+  camera.quaternion.copy(w.quat);
+  camera.updateMatrixWorld();
+  return true;
+}
+
+function pathBake() {
+  if (!PATH.samples) return;
+  const n = PATH.keys;
+  CAMKEYS = [];
+  for (let k = 0; k < n; k++) {
+    const t = n > 1 ? k / (n - 1) : 0;
+    const s = pathEvaluate(t);
+    CAMKEYS.push({ t, pos: s.pos, tgt: s.tgt, fov: s.fov ?? camera.fov });
+  }
+  rebuildCamCurves();
+  refreshCamUI();
+  setCamMode("keyframes");
+  setStatus(`Track baked to ${n} camera keyframes — Keyframes mode.`);
+}
+
+function setTimelineSeconds(sec) {
+  const el = $("p-dur");
+  const v = clampNum(sec, parseFloat(el.min), parseFloat(el.max));
+  el.value = v;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  if (Math.abs(v - sec) > 1e-3) setStatus(`Clip is ${sec.toFixed(1)} s — the timeline is capped at ${el.max} s, so it will play faster.`, true);
+}
+
+/* ===== UI + presets =================================================== */
+const VM_SLIDERS = [["vmRot", "rot", 2], ["vmRoll", "roll", 2], ["vmDolly", "dolly", 2], ["vmClean", "clean", 1], ["vmSplit", "split", 0], ["vmFov", "fov", 0]];
+const PATH_SLIDERS = [["pathScale", "scale", 2], ["pathFps", "fps", 0], ["pathKeys", "keys", 0]];
+
+function vmRefreshUI() {
+  const mod = document.querySelector('.mod[data-group="motion"]');
+  mod.dataset.vmmode = VM.mode;
+  for (const [id, key, dg] of VM_SLIDERS) { $(id).value = VM[key]; $("o-" + id).textContent = Number(VM[key]).toFixed(dg); }
+  $("vmOn").checked = VM.on; $("vmMode").value = VM.mode; $("vmBand").value = VM.band; $("vmRate").value = String(VM.rate);
+  $("vmLoad").disabled = VM.busy;
+  $("vmClear").disabled = !VM.raw || VM.busy;
+  $("vmMatchDur").disabled = !VM.raw;
+  if (!VM.raw && !VM.busy) vmSetInfo("No clip analysed.");
+  motionFlag();
+  vmDrawPlot();
+}
+function pathRefreshUI() {
+  const mod = document.querySelector('.mod[data-group="motion"]');
+  mod.dataset.palign = PATH.align;
+  for (const [id, key, dg] of PATH_SLIDERS) $(id).value = PATH[key];
+  $("o-pathScale").textContent = "×" + Math.pow(10, PATH.scale).toFixed(2);
+  $("o-pathFps").textContent = String(PATH.fps);
+  $("o-pathKeys").textContent = String(PATH.keys);
+  $("pathAlign").value = PATH.align; $("pathWorld").value = PATH.world; $("pathUseFov").checked = PATH.useFov;
+  const has = !!PATH.samples;
+  for (const id of ["pathClear", "pathAnchor", "pathPlay", "pathMatchDur", "pathBake"]) $(id).disabled = !has;
+  $("pathInfo").textContent = has
+    ? `${PATH.name} · ${PATH.samples.length} poses · ${pathSeconds().toFixed(1)} s${PATH.samples.some((s) => s.fov != null) ? " · fov" : ""}`
+    : "No camera track.";
+  motionFlag();
+}
+function motionFlag() {
+  const on = (VM.on && !!VM.proc) || (camMode === "path" && !!PATH.samples);
+  const flag = $("vmFlag");
+  flag.textContent = on ? "●" : VM.raw || PATH.samples ? "·" : "";
+  flag.classList.toggle("on", on || !!VM.raw || !!PATH.samples);
+}
+
+for (const [id, key, dg] of VM_SLIDERS) {
+  $(id).addEventListener("input", () => {
+    VM[key] = parseFloat($(id).value);
+    $("o-" + id).textContent = VM[key].toFixed(dg);
+    if (key !== "rot" && key !== "roll" && key !== "dolly") vmProcess();
+  });
+}
+$("vmOn").onchange = () => { VM.on = $("vmOn").checked; motionFlag(); };
+$("vmMode").onchange = () => { VM.mode = $("vmMode").value; vmRefreshUI(); };
+$("vmBand").onchange = () => { VM.band = $("vmBand").value; vmProcess(); };
+$("vmRate").onchange = () => { VM.rate = parseInt($("vmRate").value, 10); };
+$("vmLoad").onclick = () => $("vmFile").click();
+$("vmFile").onchange = (e) => {
+  const f = e.target.files?.[0];
+  e.target.value = "";
+  if (f) vmAnalyse(f, f.name);
+};
+$("vmClear").onclick = () => { VM.raw = null; VM.proc = null; VM.name = ""; VM.duration = 0; vmRefreshUI(); };
+$("vmMatchDur").onclick = () => { if (VM.duration) setTimelineSeconds(VM.duration); };
+
+for (const [id, key] of PATH_SLIDERS) {
+  $(id).addEventListener("input", () => {
+    PATH[key] = parseFloat($(id).value);
+    pathRefreshUI();
+    if (key === "scale") driveCamera();
+  });
+}
+$("pathAlign").onchange = () => {
+  PATH.align = $("pathAlign").value;
+  if (PATH.align === "splat") pathFocusFromSplat();
+  else if (!PATH.anchor) pathAnchor();
+  driveCamera();
+  pathRefreshUI();
+};
+$("pathWorld").onchange = () => { PATH.world = $("pathWorld").value; pathFocusFromSplat(); driveCamera(); };
+$("pathUseFov").onchange = () => { PATH.useFov = $("pathUseFov").checked; driveCamera(); };
+$("pathLoad").onclick = () => $("pathFile").click();
+$("pathFile").onchange = (e) => {
+  const fs = e.target.files;
+  if (fs?.length) pathLoadFiles(fs);
+  e.target.value = "";
+};
+$("pathClear").onclick = () => {
+  PATH.samples = null; PATH.name = "";
+  if (camMode === "path") setCamMode("manual");
+  pathRefreshUI();
+};
+/* Anchors on the camera as it is now — frame the start in Manual first. */
+$("pathAnchor").onclick = () => { pathAnchor(); setPlayhead(0); setCamMode("path"); };
+$("pathPlay").onclick = () => setCamMode("path");
+$("pathMatchDur").onclick = () => setTimelineSeconds(pathSeconds());
+$("pathBake").onclick = pathBake;
+
+/* Preset — additive, no version bump. The analysed curves and the imported
+   poses are embedded (the source files are not), downsampled to keep the
+   JSON small. */
+function motionSerialize() {
+  const o = { vm: {}, path: {} };
+  for (const k of ["on", "mode", "band", "rot", "roll", "dolly", "clean", "split", "fov", "rate"]) o.vm[k] = VM[k];
+  if (VM.raw) {
+    const n = VM.raw.dx.length, step = Math.max(1, Math.ceil(n / 3000));
+    /* Deltas are summed per block, so the integrated curves survive the
+       downsampling exactly (only their time resolution drops). */
+    const pick = (a) => Array.from({ length: Math.ceil(n / step) }, (_, i) => {
+      let s = 0;
+      for (let k = i * step; k < Math.min(n, (i + 1) * step); k++) s += a[k];
+      return +s.toFixed(5);
+    });
+    o.vm.clip = { name: VM.name, duration: VM.duration, w: VM.raw.w, h: VM.raw.h, step,
+                  dx: pick(VM.raw.dx), dy: pick(VM.raw.dy), rot: pick(VM.raw.rot), ls: pick(VM.raw.ls) };
+  }
+  for (const k of ["align", "world", "scale", "fps", "useFov", "keys", "auto", "focusD"]) o.path[k] = PATH[k];
+  if (PATH.samples) {
+    const S = PATH.samples, step = Math.max(1, Math.ceil(S.length / 1500));
+    const r = (v) => +v.toFixed(6);
+    o.path.track = {
+      name: PATH.name, seconds: PATH.secondsFixed, span: PATH.frameSpan,
+      anchor: PATH.anchor?.toArray().map(r) ?? null,
+      applied: PATH.applied?.toArray().map(r) ?? null,
+      s: S.filter((_, i) => i % step === 0 || i === S.length - 1)
+          .map((s) => [r(s.t), ...s.pos.toArray().map(r), ...s.quat.toArray().map(r), s.fov == null ? null : r(s.fov)]),
+    };
+  }
+  return o;
+}
+function motionApplyPreset(o) {
+  if (!o || typeof o !== "object") return;
+  const v = o.vm ?? {};
+  for (const [id, key] of VM_SLIDERS) if (Number.isFinite(v[key])) VM[key] = clampNum(v[key], parseFloat($(id).min), parseFloat($(id).max));
+  if (typeof v.on === "boolean") VM.on = v.on;
+  if (v.mode === "inplace" || v.mode === "orbit") VM.mode = v.mode;
+  if (["full", "smooth", "shake"].includes(v.band)) VM.band = v.band;
+  if ([15, 30, 60].includes(v.rate)) VM.rate = v.rate;
+  const c = v.clip;
+  if (c && Array.isArray(c.dx) && [c.dy, c.rot, c.ls].every((a) => Array.isArray(a) && a.length === c.dx.length)) {
+    const f32 = (a) => Float32Array.from(a, (x) => (Number.isFinite(x) ? x : 0));
+    VM.raw = { dx: f32(c.dx), dy: f32(c.dy), rot: f32(c.rot), ls: f32(c.ls), ok: new Uint8Array(c.dx.length).fill(1), w: c.w || VM_W, h: c.h || 180 };
+    VM.name = String(c.name ?? "clip"); VM.duration = Number(c.duration) || 0;
+    vmSetInfo(`${VM.name} · ${VM.duration.toFixed(1)} s · from preset`);
+  }
+  vmProcess();
+  vmRefreshUI();
+
+  const p = o.path ?? {};
+  if (p.align === "relative" || p.align === "splat") PATH.align = p.align;
+  if (["none", "undoNs", "zup", "yup"].includes(p.world)) PATH.world = p.world;
+  for (const [id, key] of PATH_SLIDERS) if (Number.isFinite(p[key])) PATH[key] = clampNum(p[key], parseFloat($(id).min), parseFloat($(id).max));
+  if (typeof p.useFov === "boolean") PATH.useFov = p.useFov;
+  if (Number.isFinite(p.auto) && p.auto > 0) PATH.auto = p.auto;
+  if (Number.isFinite(p.focusD) && p.focusD > 0) PATH.focusD = p.focusD;
+  const tr = p.track;
+  if (tr && Array.isArray(tr.s) && tr.s.length) {
+    PATH.samples = tr.s.filter((a) => Array.isArray(a) && a.slice(0, 8).every(Number.isFinite)).map((a) => ({
+      t: clampNum(a[0], 0, 1), pos: new THREE.Vector3(a[1], a[2], a[3]), quat: new THREE.Quaternion(a[4], a[5], a[6], a[7]).normalize(),
+      fov: Number.isFinite(a[8]) ? a[8] : null,
+    }));
+    PATH.name = String(tr.name ?? "track");
+    PATH.secondsFixed = Number.isFinite(tr.seconds) ? tr.seconds : null;
+    PATH.frameSpan = Number.isFinite(tr.span) ? tr.span : PATH.samples.length - 1;
+    PATH.anchor = Array.isArray(tr.anchor) && tr.anchor.length === 16 ? new THREE.Matrix4().fromArray(tr.anchor) : null;
+    PATH.applied = Array.isArray(tr.applied) && tr.applied.length === 16 ? new THREE.Matrix4().fromArray(tr.applied) : null;
+  } else if (tr === undefined && o.path) {
+    PATH.samples = null;
+  }
+  pathRefreshUI();
+  if (camMode === "path") driveCamera();
+}
+
+vmRefreshUI();
+pathRefreshUI();
+
+/* ------------------------------------------------------------------ *
  * Transport + live loop
  * ------------------------------------------------------------------ */
 let lastT = performance.now(), fpsAvg = 0;
@@ -5449,6 +6479,7 @@ $("scrub").addEventListener("input", (e) => setPlayhead(parseFloat(e.target.valu
 function frame(now) {
   requestAnimationFrame(frame);
   if (rendering) return;                    // the offline loop owns the canvas
+  if (VM.busy) return;                      // OVVO fork — motion analysis gets the whole CPU; the view resumes after
   const dt = Math.min((now - lastT) / 1000, 0.1);
   lastT = now;
   if (playing) {
@@ -5468,6 +6499,7 @@ function frame(now) {
     syncSliders();
     driveCamera();      // playback drives every frame; paused frames do NOT — that was the bug (see Phase 1 in NOTES)
     drawCamRow();
+    if (VM.proc) vmDrawPlot();
     audMeters();
     drawLane();
     drawSparkline();
@@ -5481,7 +6513,9 @@ function frame(now) {
      is actually rendered). Undone right after the render, so the next
      controls.update() and every tool in between see the authored camera. */
   const tkHead = tkUpdate();
-  const tkMoved = tkApply(tkHead);
+  let tkMoved = pathOrientApply(playhead);
+  tkMoved = vmApply(playhead) || tkMoved;        // OVVO fork — 2D video motion layer
+  tkMoved = tkApply(tkHead) || tkMoved;
   $("t-head").textContent = tkHeadText();
   pushCameraUniform();    // AFTER controls.update() — must see this frame's final camera pose, not last frame's
   updateDofFocus();
@@ -5669,7 +6703,9 @@ $("render").onclick = async () => {
       /* Only a recorded take ever reaches an export — live tracking is not
          reproducible, and a take is sampled from the export's own playhead,
          so it stays frame-exact like every other driven value here. */
-      const tkMoved = TK.takeExport && TK.take ? tkApply(tkTakeAt(playhead)) : false;
+      let tkMoved = pathOrientApply(playhead);
+      tkMoved = vmApply(playhead) || tkMoved;
+      tkMoved = (TK.takeExport && TK.take ? tkApply(tkTakeAt(playhead)) : false) || tkMoved;
       pushCameraUniform();   // AFTER driveCamera()/controls.update() — see the live loop's own note
       updateDofFocus();
       updateShaderUniforms();
@@ -5824,6 +6860,7 @@ function serialize() {
        embedded, exactly as the splat is — reload the track, keep the routing. */
     /* OVVO fork — tracking settings + recorded take. Additive, no version bump. */
     tracking: tkSerialize(),
+    motion: motionSerialize(),
     audio: {
       name: audioName,
       /* Additive, no version bump — absent means false, the old behaviour. */
@@ -6086,7 +7123,7 @@ function applyPreset(o) {
      checkbox defaulted to and what driveCamera() actually did with an old
      preset's A/B pair before this phase existed. */
   const modeIn = o.camera?.mode;
-  setCamMode(["manual", "keyframes", "orbit"].includes(modeIn) ? modeIn : "keyframes");
+  setCamMode(["manual", "keyframes", "orbit", "path"].includes(modeIn) ? modeIn : "keyframes");
 
   /* Additive, no version bump: a preset with no transform block takes
      XFORM_DEFAULT, which reproduces the pre-Phase-2 hardcoded Y-flip
@@ -6144,6 +7181,7 @@ function applyPreset(o) {
   }
 
   tkApplyPreset(o.tracking);   // OVVO fork — absent means "leave as is"
+  motionApplyPreset(o.motion);
 
   pushUniforms();
   syncSliders();
@@ -6713,6 +7751,7 @@ if (DEBUG) {
     get rgSlot(){ return rgSlot; },
     get MAX_REGIONS(){ return MAX_REGIONS; },
     get playhead(){ return playhead; },
+    get VM(){ return VM; }, get PATH(){ return PATH; }, vmAnalyse, vmApply, vmAt, vmProcess, pathSetFrames, pathLoadFiles, pathWorldAt, pathEvaluate, pathBake, parseColmapImages, parseTransformsJson, parseChan,
     get TK(){ return TK; }, tkApply, tkRestore, tkPushSample, tkUpdate, tkTakeAt, tkStart, tkStop, tkOnFace, tkOnOrient,
     /* Every coverage figure in NOTES was measured against "void". Both probe
        helpers below force it for their own duration regardless of what the
