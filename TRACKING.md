@@ -151,12 +151,60 @@ Orbit. Position, orientation (roulis compris) et focale sont rejouées.
 Le head tracking et le mouvement 2D s'ajoutent par-dessus le mode Path.
 Ordre d'application : orientation exacte du Path, puis mouvement 2D, puis tête.
 
+## Plein écran sans interface (Kiosk)
+
+La touche **`K`** (ou le bouton **Kiosk** de la section Tracking) passe en
+plein écran et masque toute l'interface : panneau, timeline, compteurs, aperçu
+webcam. Le curseur disparaît après 2 s sans mouvement. `K` ou `Échap` font
+revenir l'interface. La touche `H` masque seulement l'interface, sans plein écran.
+
+Le tracking, le MIDI, la lecture et l'audio continuent de fonctionner en Kiosk.
+
+## Contrôleur MIDI (Akai LPD8, LPD8 Wireless, etc.)
+
+La section **MIDI** relie n'importe quel potard ou pad à n'importe quel réglage
+de l'interface, par apprentissage :
+
+1. **Enable MIDI** (Chrome ou Edge). Le contrôleur apparaît sous les boutons.
+2. **Learn**, puis cliquer sur un réglage à l'écran (slider, bouton, case, menu).
+3. Tourner un potard ou frapper un pad : la liaison est créée. Recommencer pour
+   le réglage suivant, puis recliquer sur **Learn** pour terminer.
+
+| Sur le contrôleur | Sur un slider | Sur un bouton | Sur une case | Sur un menu |
+|---|---|---|---|---|
+| Potard (CC) | balaie toute la plage | déclenche au passage du milieu | coche / décoche | choisit l'entrée |
+| Pad (note ou program change) | coup momentané : vélocité = intensité, relâché = retour | appuie | bascule | entrée suivante |
+
+- **inv** inverse le sens d'une liaison, **×** la supprime.
+- **Smoothing** lisse les potards (un potard MIDI n'a que 127 crans).
+- Les liaisons sont mémorisées sur la machine, voyagent dans les presets, et
+  s'exportent / s'importent en fichier.
+- Un potard pilote le slider lui-même : si le paramètre est armé en keyframes,
+  le mouvement s'enregistre comme à la souris.
+
+### Connexion du LPD8 Wireless
+
+- **En USB** : rien à faire, il apparaît dès **Enable MIDI**.
+- **En Bluetooth sur macOS** : l'appairer dans *Configuration audio et MIDI →
+  Fenêtre → Afficher le studio MIDI → Bluetooth*. Il apparaît ensuite comme un
+  port MIDI normal.
+- **En Bluetooth sur Windows, ChromeOS ou Android** : utiliser le bouton
+  **Bluetooth…**, qui se connecte directement depuis le navigateur (BLE-MIDI),
+  sans pilote. Il se reconnecte seul si le contrôleur s'est mis en veille.
+
+Les pads du LPD8 fonctionnent dans ses trois modes (PAD, CC, PROG CHNG).
+
+Un pad MIDI ne peut pas déclencher le vrai plein écran : le navigateur exige
+une touche ou un clic. Lié au bouton Kiosk, il masque et réaffiche l'interface ;
+lancer le plein écran une fois avec `K` ou `F11`.
+
 ## Clavier
 
 | Touche | Action |
 |---|---|
 | `T` | démarrer / arrêter le tracking |
 | `C` | calibrer (la position actuelle devient le centre) |
+| `K` | Kiosk : plein écran sans interface |
 | `H` | masquer / afficher le rail |
 
 ## Installation sans surveillance
@@ -169,7 +217,7 @@ index.html?splat=scenes/hall.ply&preset=presets/hall.json&track=webcam&mode=wind
 
 - `splat` / `preset` : chargés au démarrage (URL relatives au serveur).
 - `track=webcam|mouse|take` : démarre la source. Le gyroscope est exclu, car iOS impose un tap.
-- `play` : lance la timeline. `kiosk` : masque le rail.
+- `play` : lance la timeline. `kiosk` : masque toute l'interface.
 - Pour un vrai plein écran sans clic, lancer le navigateur en mode kiosque,
   par exemple `chrome --kiosk --use-fake-ui-for-media-stream "http://localhost:8000/?…"`.
   Le second flag accorde la caméra automatiquement ; à réserver à une machine dédiée.

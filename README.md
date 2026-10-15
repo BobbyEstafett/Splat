@@ -1,8 +1,10 @@
-# Gausseous — fork
+# Gausseous — OVVO fork
 
-> **Fork** — ajoute une caméra « fenêtre » pilotée par le tracking
-> de tête (webcam + MediaPipe) ou le gyroscope du téléphone, par-dessus toutes
-> les fonctions d'origine. Voir **[TRACKING.md](TRACKING.md)**.
+> **Fork OVVO Studio** — ajoute une caméra « fenêtre » pilotée par le tracking
+> de tête (webcam ou vidéo + MediaPipe) ou le gyroscope du téléphone, et le
+> transfert de mouvement caméra depuis une vidéo (analyse 2D) ou une trajectoire
+> 3D importée (COLMAP, Nerfstudio, glTF/Blender, Nuke), par-dessus toutes les
+> fonctions d'origine. Voir **[TRACKING.md](TRACKING.md)**.
 > Upstream : [quixbrics/gausseous](https://github.com/quixbrics/gausseous) (MIT).
 
 

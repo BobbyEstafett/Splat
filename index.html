@@ -226,6 +226,16 @@
   .mod:not([data-tksrc="headvideo"]) .tk-hv{display:none}
   #vmPlot{width:100%; height:64px; display:block; background:var(--void); border:1px solid var(--rule); margin:0 0 9px}
   .mod[data-vmmode="inplace"] .vm-orbit{display:none}
+  body.kiosk.idle, body.kiosk.idle *{cursor:none !important}
+  body.kiosk #drop{display:none}
+  body.midi-learn #rail input[type=range], body.midi-learn #rail select, body.midi-learn #rail input[type=checkbox],
+  body.midi-learn button:not([data-group="midi"] button){outline:1px dashed var(--edit); outline-offset:1px; cursor:crosshair}
+  body.midi-learn [data-group="midi"] button{outline:0; cursor:pointer}
+  .midi-pending{outline:1px solid var(--live) !important; outline-offset:2px}
+  .midi-row{display:grid; grid-template-columns:1fr auto auto; gap:6px; align-items:center; margin-bottom:4px; color:var(--ink-dim)}
+  .midi-row span{white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .midi-row button{padding:1px 7px}
+  #midiList{color:var(--ink-dim); margin:0 0 9px}
   .mod:not([data-palign="splat"]) .path-splat, .mod[data-palign="splat"] .path-rel{display:none}
   .sub{color:var(--ink); letter-spacing:.12em; text-transform:uppercase; font-size:10px; margin:14px 0 8px; border-top:1px solid var(--rule); padding-top:10px}
   #osd span{font-variant-numeric:tabular-nums}
@@ -675,7 +685,7 @@
         <option value="window" selected>Window — off-axis</option>
         <option value="orbit">Orbit — parallax</option>
       </select>
-      <button id="tkKiosk" title="Fullscreen with the rail hidden — for the installation screen. Esc leaves fullscreen.">Kiosk</button>
+      <button id="tkKiosk" title="Fullscreen with no interface at all — for the installation screen. K toggles it, Esc leaves.">Kiosk (K)</button>
     </div>
     <p id="tkInfo" style="color:var(--ink-dim); margin:0 0 9px">Off.</p>
     <div class="row"><label>Amount</label><output id="o-tkAmt">—</output>
@@ -1222,6 +1232,32 @@
     </p>
   </details>
 
+  <!-- OVVO fork — hardware control by MIDI learn. -->
+  <details class="mod" data-group="midi" open>
+    <summary>MIDI <em>controller</em><i class="gflag" id="midiFlag"></i></summary>
+    <div class="btns" style="margin-bottom:9px">
+      <button id="midiEnable" title="Open the MIDI ports: USB controllers, and Bluetooth ones already paired in the operating system">Enable MIDI</button>
+      <button id="midiBle" title="Connect a Bluetooth LE MIDI controller directly from the browser — for systems that do not list it as a MIDI port">Bluetooth…</button>
+      <button id="midiLearn" aria-pressed="false" title="Arm, click a control on screen, then move a knob or hit a pad">Learn</button>
+    </div>
+    <p id="midiInfo" style="color:var(--ink-dim); margin:0 0 4px">MIDI off.</p>
+    <p style="color:var(--signal); margin:0 0 9px; min-height:1.4em"><span id="midiHint"></span> <span id="midiLast" style="color:var(--ink-dim)"></span></p>
+    <div id="midiList">No bindings yet.</div>
+    <div class="row" title="Glide time on knob-driven sliders — hides the 127 steps of a MIDI knob. 0 = instant."><label>Smoothing (ms)</label><output id="o-midiSmooth">—</output>
+      <input type="range" id="midiSmooth" min="0" max="500" step="5" value="60"></div>
+    <div class="btns">
+      <button id="midiExport" title="Save the bindings to a file">Export</button>
+      <button id="midiImport" title="Load bindings from a file">Import</button>
+      <button id="midiClear" title="Remove every binding">Clear all</button>
+    </div>
+    <p style="color:var(--ink-dim); margin:8px 0 0">
+      A knob on a slider sweeps its whole range. A pad on a slider is a momentary
+      hit (velocity = amount, released = back). A pad on a button presses it, on a
+      checkbox toggles it, on a menu steps to the next entry. Bindings are kept on
+      this machine and travel inside presets.
+    </p>
+  </details>
+
   <details class="mod" data-group="preset">
     <summary>Preset <em>json</em><i class="gflag"></i></summary>
     <div class="btns">
@@ -1255,6 +1291,7 @@
 
 <input type="file" id="file" accept=".ply,.spz,.splat,.ksplat,.sog,.zip,.rad" hidden>
 <input type="file" id="presetFile" accept=".json,application/json" hidden>
+<input type="file" id="midiFile" accept=".json,application/json" hidden>
 <input type="file" id="vmFile" accept="video/*,.mp4,.mov,.m4v,.webm,.mkv" hidden>
 <input type="file" id="tkHeadFile" accept="video/*,.mp4,.mov,.m4v,.webm,.mkv" hidden>
 <input type="file" id="pathFile" accept=".json,.txt,.gltf,.glb,.chan,application/json,text/plain" multiple hidden>
@@ -1281,6 +1318,7 @@
       <tr><td>H</td><td>hide / show the rail — preview the frame clean</td></tr>
       <tr><td>T</td><td>tracking start / stop</td></tr>
       <tr><td>C</td><td>calibrate tracking — current position becomes centre</td></tr>
+      <tr><td>K</td><td>kiosk — fullscreen with no interface (K or Esc to leave)</td></tr>
       <tr><td>Hold A</td><td>Adjust — release to return to the previous mode</td></tr>
       <tr><td>Hold F</td><td>Focus pick — release to return to the previous mode</td></tr>
       <tr><td>Esc</td><td>exit any transient mode, clear a focus lock</td></tr>
@@ -5540,14 +5578,6 @@ $("tkStart").onclick = () => (TK.running ? tkStop() : tkStart());
 $("tkCalib").onclick = tkCalibrate;
 $("tkRec").onclick = () => (TK.rec ? tkRecStop("Recording stopped — partial take kept.") : tkRecStart());
 $("tkClearTake").onclick = () => { TK.take = null; TK.rec = false; tkSetInfo("Take cleared."); tkRefreshUI(); };
-$("tkKiosk").onclick = () => {
-  setHudHidden(true);
-  document.documentElement.requestFullscreen?.().catch(() => {});
-};
-document.addEventListener("fullscreenchange", () => {
-  if (!document.fullscreenElement && document.body.classList.contains("hud-hidden")) setHudHidden(false);
-  else resize();
-});
 
 function tkHeadText() {
   if (!TK.running) return TK.take ? "take" : "off";
@@ -6464,6 +6494,335 @@ vmRefreshUI();
 pathRefreshUI();
 
 /* ------------------------------------------------------------------ *
+ * MIDI — hardware control (OVVO fork)
+ *
+ * Any knob, fader or pad can be bound to any control of the rail by
+ * "learn": arm Learn, touch a control on screen, move the hardware. A
+ * binding drives the control's own DOM element and fires its own
+ * `input` / `change` / click — the single write path every slider already
+ * has (auto-key on armed envelopes, dirty marking, pushUniforms), exactly
+ * the reasoning Gesture mode follows. Nothing here knows what a parameter
+ * means.
+ *
+ * Two transports feed the same midiHandle(): the Web MIDI API (USB, and
+ * Bluetooth devices the OS has already paired as a MIDI port — the macOS
+ * route), and BLE-MIDI straight over Web Bluetooth for systems that do not
+ * expose Bluetooth MIDI as a port.
+ * ------------------------------------------------------------------ */
+const MIDI_KEY = "gausseous.midi.v1";
+const MIDI = {
+  access: null, ble: [], inputs: [],
+  learn: false, pending: null,      // pending = CSS selector of the control waiting for a message
+  map: {},                          // "cc:1:7" | "note:1:36" | "pc:1:3"  ->  { sel, inv }
+  smooth: 60,                       // ms — slew on knob-driven sliders, hides the 127-step staircase
+  ease: new Map(),                  // sel -> { el, cur, target }
+  held: new Map(),                  // key -> value to restore on pad release (pad on a slider)
+  lastHi: {},                       // key -> was the CC above the threshold (edge detection)
+};
+
+function midiSel(el) {
+  if (!el) return null;
+  if (el.id) return "#" + el.id;
+  const host = el.parentElement?.closest("[id]");
+  if (host && el.dataset?.mode) return `#${host.id} [data-mode="${el.dataset.mode}"]`;
+  return null;
+}
+function midiLabel(sel) {
+  const el = document.querySelector(sel);
+  if (!el) return sel + " (missing)";
+  if (el.type === "range") return el.closest(".row")?.querySelector("label")?.textContent.trim() || sel;
+  if (el.type === "checkbox") return el.closest("label")?.textContent.trim() || sel;
+  if (el.tagName === "SELECT") return el.title || sel;
+  return el.textContent.trim() || el.title || sel;
+}
+const midiKeyText = (k) => {
+  const [t, ch, n] = k.split(":");
+  return `${t === "cc" ? "CC" : t === "note" ? "Pad/Note" : "Prog"} ${n} · ch ${ch}`;
+};
+
+/* --- applying a message to a control --------------------------------- */
+function midiSetRange(el, sel, v01, immediate) {
+  if (el.disabled) return;
+  const lo = parseFloat(el.min), hi = parseFloat(el.max);
+  const target = lo + clampNum(v01, 0, 1) * (hi - lo);
+  if (immediate || MIDI.smooth < 1) {
+    MIDI.ease.delete(sel);
+    el.value = target;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    return;
+  }
+  const e = MIDI.ease.get(sel);
+  if (e) e.target = target;
+  else MIDI.ease.set(sel, { el, cur: parseFloat(el.value), target });
+}
+/* Called once per live frame. */
+function midiTick(dt) {
+  if (!MIDI.ease.size) return;
+  const k = 1 - Math.exp(-(dt * 1000) / Math.max(MIDI.smooth, 1));
+  for (const [sel, e] of MIDI.ease) {
+    const span = parseFloat(e.el.max) - parseFloat(e.el.min);
+    e.cur += (e.target - e.cur) * k;
+    const done = Math.abs(e.target - e.cur) < span * 5e-4;
+    if (done) e.cur = e.target;
+    const before = e.el.value;
+    e.el.value = e.cur;
+    if (e.el.value !== before) e.el.dispatchEvent(new Event("input", { bubbles: true }));
+    if (done) MIDI.ease.delete(sel);
+  }
+}
+
+function midiApply(key, kind, value, on) {
+  const b = MIDI.map[key];
+  if (!b) return;
+  const el = document.querySelector(b.sel);
+  if (!el) return;
+  const v01 = b.inv ? 1 - value / 127 : value / 127;
+  if (el.type === "range") {
+    if (kind === "cc") midiSetRange(el, b.sel, v01, false);
+    else if (on) {                                   // pad: momentary hit, velocity-scaled, restored on release
+      if (!MIDI.held.has(key)) MIDI.held.set(key, parseFloat(el.value));
+      midiSetRange(el, b.sel, kind === "pc" ? (b.inv ? 0 : 1) : v01, true);
+    } else if (MIDI.held.has(key)) {
+      const prev = MIDI.held.get(key);
+      MIDI.held.delete(key);
+      const lo = parseFloat(el.min), hi = parseFloat(el.max);
+      midiSetRange(el, b.sel, (prev - lo) / (hi - lo), true);
+    }
+    return;
+  }
+  /* Everything else is a trigger: a pad press, or a knob crossing its middle. */
+  let fire = on;
+  if (kind === "cc") {
+    const hi = value >= 64;
+    fire = hi && !MIDI.lastHi[key];
+    MIDI.lastHi[key] = hi;
+    if (el.type === "checkbox") {                    // a knob sets a checkbox, it does not toggle it
+      const want = b.inv ? !hi : hi;
+      if (el.checked !== want) { el.checked = want; el.dispatchEvent(new Event("change", { bubbles: true })); }
+      return;
+    }
+    if (el.tagName === "SELECT") {
+      const i = Math.min(el.options.length - 1, Math.floor(v01 * el.options.length));
+      if (el.selectedIndex !== i) { el.selectedIndex = i; el.dispatchEvent(new Event("change", { bubbles: true })); }
+      return;
+    }
+  }
+  if (!fire || el.disabled) return;
+  if (el.type === "checkbox") { el.checked = !el.checked; el.dispatchEvent(new Event("change", { bubbles: true })); }
+  else if (el.tagName === "SELECT") { el.selectedIndex = (el.selectedIndex + 1) % el.options.length; el.dispatchEvent(new Event("change", { bubbles: true })); }
+  else el.click();
+}
+
+/* One decoded channel message, from either transport. */
+function midiHandle(st, d1, d2 = 0) {
+  const type = st & 0xf0, ch = (st & 0x0f) + 1;
+  let kind, on = true, value = d2;
+  if (type === 0xb0) kind = "cc";
+  else if (type === 0x90) { kind = "note"; on = d2 > 0; }
+  else if (type === 0x80) { kind = "note"; on = false; value = 0; }
+  else if (type === 0xc0) { kind = "pc"; value = 127; }
+  else return;
+  const key = `${kind}:${ch}:${d1}`;
+  $("midiLast").textContent = `${midiKeyText(key)} = ${kind === "pc" ? "·" : d2}`;
+  if (MIDI.learn && MIDI.pending && (kind !== "note" || on)) {
+    for (const k of Object.keys(MIDI.map)) if (MIDI.map[k].sel === MIDI.pending && k.split(":")[0] === kind) delete MIDI.map[k];   // one knob per control
+    MIDI.map[key] = { sel: MIDI.pending, inv: false };
+    midiSetPending(null);
+    midiSave();
+    midiRefreshUI();
+    return;                                          // the learning message itself does not act
+  }
+  if (!MIDI.learn) midiApply(key, kind, value, on);
+}
+
+/* --- transports ------------------------------------------------------ */
+function midiHook() {
+  MIDI.inputs = [];
+  if (MIDI.access) {
+    for (const inp of MIDI.access.inputs.values()) {
+      inp.onmidimessage = (e) => { const d = e.data; if (d.length >= 2) midiHandle(d[0], d[1], d[2] ?? 0); };
+      MIDI.inputs.push(inp.name || "MIDI input");
+    }
+  }
+  midiRefreshUI();
+}
+async function midiEnable() {
+  if (!navigator.requestMIDIAccess) { $("midiInfo").textContent = "This browser has no Web MIDI — use Chrome or Edge."; return; }
+  try {
+    MIDI.access = await navigator.requestMIDIAccess({ sysex: false });
+    MIDI.access.onstatechange = midiHook;            // hot-plug, and a wireless unit waking up
+    midiHook();
+  } catch (e) {
+    $("midiInfo").textContent = "MIDI access refused: " + (e?.message ?? e);
+  }
+}
+
+/* BLE-MIDI over Web Bluetooth. Packet: header, then (timestamp, status,
+   data…) groups; a group may omit the status (running status) and, after the
+   first, the timestamp too. */
+const BLE_MIDI_SVC = "03b80e5a-ede8-4b33-a751-6ce34ec4c700", BLE_MIDI_CHR = "7772e5db-3868-4112-a1a9-f2669d106bf3";
+function midiParseBle(dv) {
+  let st = 0, i = 1;
+  const n = dv.byteLength;
+  while (i < n) {
+    if (dv.getUint8(i) & 0x80) {                     // timestamp low byte
+      i++;
+      if (i < n && dv.getUint8(i) & 0x80) { st = dv.getUint8(i); i++; }
+    }
+    if (st >= 0xf0) return;                          // system / sysex: not ours
+    const need = (st & 0xf0) === 0xc0 || (st & 0xf0) === 0xd0 ? 1 : 2;
+    if (!st || i + need > n) return;
+    const d1 = dv.getUint8(i), d2 = need === 2 ? dv.getUint8(i + 1) : 0;
+    if ((d1 | d2) & 0x80) return;                    // malformed
+    i += need;
+    midiHandle(st, d1, d2);
+  }
+}
+async function midiBleConnect() {
+  if (!navigator.bluetooth) { $("midiInfo").textContent = "No Web Bluetooth here — pair the controller in the OS instead, then Enable MIDI."; return; }
+  try {
+    const dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [BLE_MIDI_SVC] }] });
+    const attach = async () => {
+      const srv = await dev.gatt.connect();
+      const chr = await (await srv.getPrimaryService(BLE_MIDI_SVC)).getCharacteristic(BLE_MIDI_CHR);
+      await chr.startNotifications();
+      chr.addEventListener("characteristicvaluechanged", (e) => midiParseBle(e.target.value));
+    };
+    await attach();
+    const name = (dev.name || "Bluetooth MIDI") + " (BLE)";
+    if (!MIDI.ble.includes(name)) MIDI.ble.push(name);
+    dev.addEventListener("gattserverdisconnected", async () => {
+      MIDI.ble = MIDI.ble.filter((x) => x !== name); midiRefreshUI();
+      for (let k = 0; k < 20; k++) {                 // the unit sleeps to save battery: keep trying for a while
+        await new Promise((r) => setTimeout(r, 3000));
+        try { await attach(); MIDI.ble.push(name); midiRefreshUI(); return; } catch { /* still asleep */ }
+      }
+    });
+    midiRefreshUI();
+  } catch (e) {
+    if (e?.name !== "NotFoundError") $("midiInfo").textContent = "Bluetooth: " + (e?.message ?? e);
+  }
+}
+
+/* --- learn ----------------------------------------------------------- */
+function midiSetPending(sel) {
+  document.querySelector(".midi-pending")?.classList.remove("midi-pending");
+  MIDI.pending = sel;
+  if (sel) (document.querySelector(sel)?.closest(".row, label.check") ?? document.querySelector(sel))?.classList.add("midi-pending");
+  $("midiHint").textContent = !MIDI.learn ? ""
+    : sel ? `Now move a knob or hit a pad for “${midiLabel(sel)}”.`
+    : "Click any slider, button, checkbox or menu on screen…";
+}
+function midiSetLearn(on) {
+  MIDI.learn = on;
+  document.body.classList.toggle("midi-learn", on);
+  $("midiLearn").classList.toggle("on", on);
+  $("midiLearn").setAttribute("aria-pressed", String(on));
+  $("midiLearn").textContent = on ? "Learning… (done)" : "Learn";
+  midiSetPending(null);
+  if (on && !MIDI.access && !MIDI.ble.length) midiEnable();
+}
+/* While learning, a click on a control SELECTS it instead of operating it. */
+function midiLearnPick(e) {
+  if (!MIDI.learn) return;
+  const el = e.target.closest?.('input[type="range"], input[type="checkbox"], select, button');
+  if (!el || el.closest('[data-group="midi"]') || el.type === "file") return;
+  e.preventDefault(); e.stopPropagation();
+  if (e.type !== "pointerdown") return;
+  const sel = midiSel(el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "BUTTON" ? el : null);
+  if (sel) midiSetPending(sel);
+}
+for (const t of ["pointerdown", "mousedown", "click"]) document.addEventListener(t, midiLearnPick, true);
+
+/* --- UI + persistence ------------------------------------------------ */
+function midiSave() {
+  try { localStorage.setItem(MIDI_KEY, JSON.stringify({ map: MIDI.map, smooth: MIDI.smooth })); } catch { /* private mode */ }
+}
+function midiLoadObj(o) {
+  if (!o || typeof o !== "object" || !o.map || typeof o.map !== "object") return false;
+  const map = {};
+  for (const [k, b] of Object.entries(o.map)) {
+    if (/^(cc|note|pc):\d+:\d+$/.test(k) && typeof b?.sel === "string") map[k] = { sel: b.sel, inv: !!b.inv };
+  }
+  MIDI.map = map;
+  if (Number.isFinite(o.smooth)) MIDI.smooth = clampNum(o.smooth, 0, 500);
+  return true;
+}
+function midiRefreshUI() {
+  const devs = [...MIDI.inputs, ...MIDI.ble];
+  $("midiInfo").textContent = devs.length ? devs.join(" · ")
+    : MIDI.access ? "MIDI on — no controller detected. Plug it in, or pair it (Bluetooth)." : "MIDI off.";
+  $("midiEnable").classList.toggle("on", !!MIDI.access);
+  $("midiSmooth").value = MIDI.smooth; $("o-midiSmooth").textContent = MIDI.smooth.toFixed(0);
+  const list = $("midiList");
+  list.textContent = "";
+  const keys = Object.keys(MIDI.map).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  for (const k of keys) {
+    const b = MIDI.map[k], row = document.createElement("div");
+    row.className = "midi-row";
+    const txt = document.createElement("span");
+    txt.textContent = `${midiKeyText(k)}  →  ${midiLabel(b.sel)}`;
+    const inv = document.createElement("button");
+    inv.textContent = "inv"; inv.title = "Reverse the direction"; inv.classList.toggle("on", b.inv);
+    inv.onclick = () => { b.inv = !b.inv; midiSave(); midiRefreshUI(); };
+    const del = document.createElement("button");
+    del.textContent = "×"; del.title = "Remove this binding";
+    del.onclick = () => { delete MIDI.map[k]; midiSave(); midiRefreshUI(); };
+    row.append(txt, inv, del);
+    list.append(row);
+  }
+  if (!keys.length) list.textContent = "No bindings yet.";
+  const flag = $("midiFlag");
+  flag.textContent = devs.length ? "●" : keys.length ? String(keys.length) : "";
+  flag.classList.toggle("on", devs.length > 0 || keys.length > 0);
+}
+$("midiEnable").onclick = midiEnable;
+$("midiBle").onclick = midiBleConnect;
+$("midiLearn").onclick = () => midiSetLearn(!MIDI.learn);
+$("midiClear").onclick = () => { MIDI.map = {}; midiSave(); midiRefreshUI(); };
+$("midiSmooth").addEventListener("input", () => { MIDI.smooth = parseFloat($("midiSmooth").value); $("o-midiSmooth").textContent = MIDI.smooth.toFixed(0); midiSave(); });
+$("midiExport").onclick = () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify({ format: "gausseous-midi", map: MIDI.map, smooth: MIDI.smooth }, null, 2)], { type: "application/json" }));
+  a.download = "gausseous-midi.json"; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+$("midiImport").onclick = () => $("midiFile").click();
+$("midiFile").onchange = async (e) => {
+  const f = e.target.files?.[0]; e.target.value = "";
+  if (!f) return;
+  try { if (!midiLoadObj(JSON.parse(await f.text()))) throw new Error("not a MIDI mapping file"); midiSave(); midiRefreshUI(); }
+  catch (err) { setStatus("MIDI mapping: " + err.message, true); }
+};
+try { midiLoadObj(JSON.parse(localStorage.getItem(MIDI_KEY) || "null")); } catch { /* ignore */ }
+midiRefreshUI();
+/* Re-open the port silently when the permission is already granted, so an
+   installation machine comes back up with its controller live. */
+navigator.permissions?.query({ name: "midi" }).then((p) => { if (p.state === "granted") midiEnable(); }).catch(() => {});
+
+/* ------------------------------------------------------------------ *
+ * Kiosk — fullscreen, no interface (OVVO fork)
+ * ------------------------------------------------------------------ */
+let kioskIdle = 0;
+function setKiosk(on) {
+  setHudHidden(on);
+  document.body.classList.toggle("kiosk", on);
+  if (on) document.documentElement.requestFullscreen?.().catch(() => {});   // needs a key press or click; a MIDI pad cannot grant it
+  else if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+}
+const isKiosk = () => document.body.classList.contains("kiosk");
+$("tkKiosk").onclick = () => setKiosk(!isKiosk());
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement && isKiosk()) setKiosk(false);          // Esc left fullscreen: bring the interface back
+  else resize();
+});
+addEventListener("pointermove", () => {
+  document.body.classList.remove("idle");
+  clearTimeout(kioskIdle);
+  kioskIdle = setTimeout(() => document.body.classList.add("idle"), 2000);
+});
+
+/* ------------------------------------------------------------------ *
  * Transport + live loop
  * ------------------------------------------------------------------ */
 let lastT = performance.now(), fpsAvg = 0;
@@ -6482,6 +6841,7 @@ function frame(now) {
   if (VM.busy) return;                      // OVVO fork — motion analysis gets the whole CPU; the view resumes after
   const dt = Math.min((now - lastT) / 1000, 0.1);
   lastT = now;
+  midiTick(dt);                             // OVVO fork — eased knob values, before anything reads the sliders
   if (playing) {
     const prev = playhead;
     playhead = (playhead + dt / P.dur) % 1;
@@ -6861,6 +7221,7 @@ function serialize() {
     /* OVVO fork — tracking settings + recorded take. Additive, no version bump. */
     tracking: tkSerialize(),
     motion: motionSerialize(),
+    midi: { map: MIDI.map, smooth: MIDI.smooth },
     audio: {
       name: audioName,
       /* Additive, no version bump — absent means false, the old behaviour. */
@@ -7182,6 +7543,9 @@ function applyPreset(o) {
 
   tkApplyPreset(o.tracking);   // OVVO fork — absent means "leave as is"
   motionApplyPreset(o.motion);
+  /* MIDI bindings ride along, but an empty or absent block never wipes the
+     mapping this workstation already has. */
+  if (o.midi?.map && Object.keys(o.midi.map).length && midiLoadObj(o.midi)) { midiSave(); midiRefreshUI(); }
 
   pushUniforms();
   syncSliders();
@@ -7751,6 +8115,7 @@ if (DEBUG) {
     get rgSlot(){ return rgSlot; },
     get MAX_REGIONS(){ return MAX_REGIONS; },
     get playhead(){ return playhead; },
+    get MIDI(){ return MIDI; }, midiHandle, midiSetLearn, midiSetPending, midiParseBle, setKiosk, midiRefreshUI,
     get VM(){ return VM; }, get PATH(){ return PATH; }, vmAnalyse, vmApply, vmAt, vmProcess, pathSetFrames, pathLoadFiles, pathWorldAt, pathEvaluate, pathBake, parseColmapImages, parseTransformsJson, parseChan,
     get TK(){ return TK; }, tkApply, tkRestore, tkPushSample, tkUpdate, tkTakeAt, tkStart, tkStop, tkOnFace, tkOnOrient,
     /* Every coverage figure in NOTES was measured against "void". Both probe
@@ -7886,7 +8251,7 @@ $("kbdOverlay").addEventListener("click", () => setKbdOverlay(false));
 
 const NAV_KEYS = new Set([
   "Space", "Comma", "Period", "Home", "End", "BracketLeft", "BracketRight",
-  "KeyR", "KeyH", "KeyT", "KeyC", "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6",
+  "KeyR", "KeyH", "KeyT", "KeyC", "KeyK", "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6",
 ]);
 
 /* event.code, not event.key: `key` changes with layout and modifiers
@@ -7945,6 +8310,7 @@ addEventListener("keydown", (e) => {
     case "KeyH": setHudHidden(!document.body.classList.contains("hud-hidden")); break;
     case "KeyT": TK.running ? tkStop() : tkStart(); break;     // OVVO fork — tracking
     case "KeyC": tkCalibrate(); break;
+    case "KeyK": setKiosk(!isKiosk()); break;
     default: selectRegionSlot(Number(code.slice(5)) - 1); break;   // Digit1..Digit6
   }
 });
@@ -8000,7 +8366,7 @@ requestAnimationFrame(frame);
     if (src === "webcam" || src === "mouse" || src === "take") { TK.source = src; tkRefreshUI(); await tkStart(); }
     tkRefreshUI();
     if (q.has("play") && !playing) $("play").click();
-    if (q.has("kiosk")) setHudHidden(true);
+    if (q.has("kiosk")) setKiosk(true);       // fullscreen itself is refused without a gesture; the interface still hides
   } catch (e) {
     setStatus("Boot parameters: " + (e?.message ?? e), true);
   }
