@@ -176,28 +176,42 @@ Ordre d'application : orientation exacte du Path, puis mouvement 2D, puis tête.
 Le presse-papier survit à un rechargement et passe d'un onglet à l'autre : on
 peut copier un mouvement d'un preset et le coller dans un autre.
 
-## Courbe de vitesse (section Camera)
+## Courbes de vitesse entre keyframes (section Camera → *Easing between keyframes*)
 
-L'éditeur **Speed curve** règle le *rythme* du mouvement caméra sur la timeline
-(Keyframes, Orbit et Path), sans déplacer les keys.
+Chaque intervalle entre deux keyframes (un *segment*) peut avoir sa propre
+courbe, pour la caméra comme pour n'importe quel paramètre animé.
 
-- La hauteur de la courbe correspond à la vitesse. La ligne pointillée est la
-  vitesse moyenne.
-- Monter un point accélère la caméra à cet endroit. Comme la durée totale ne
-  change pas, le reste ralentit en compensation.
-- Une vitesse à zéro produit une **pause** : la caméra s'arrête, puis repart.
-- Double-clic pour ajouter un point, `Alt`-clic pour en retirer un. Les points
-  de début et de fin se déplacent seulement en hauteur.
-- **Shape…** propose des formes de départ : constante, ease in/out,
-  accélération, décélération, lent au milieu, pause, accélération brève.
-- Les petits traits en bas indiquent où la tête de lecture atteint chaque key
-  caméra. La courbe violette montre la progression du mouvement.
-- *Also apply to parameter keyframes* : le même rythme s'applique aussi aux
-  animations des paramètres (l'audio-réactif n'est pas touché).
-- Avec une courbe de vitesse, mettre **Ease** à 0 évite que les deux lissages
-  s'additionnent.
+**Choisir le segment.** L'éditeur montre le segment sous la tête de lecture :
+- de la **caméra** quand on a cliqué en dernier dans la rangée de ticks caméra
+  (un clic entre deux ticks place la tête de lecture dans ce segment) ;
+- du **paramètre affiché dans la lane** quand on a cliqué en dernier dans la
+  lane ou sur le nom d'un paramètre.
 
-La courbe est enregistrée dans le preset et s'applique à l'export.
+◀ / ▶ passent au segment précédent / suivant.
+
+**Deux vues de la même courbe :**
+- **Speed** (comme le graphe de vitesse d'After Effects). La hauteur est la
+  vitesse ; ×1 est la vitesse moyenne du segment (ce que donnerait un mouvement
+  linéaire). Chaque poignée règle la vitesse **au départ** et **à l'arrivée**
+  du keyframe (haut / bas) et son **influence** (gauche / droite : sur quelle
+  part du segment cette vitesse agit).
+- **Value** : la courbe de bézier classique, progression entre les deux keys
+  au cours du temps. Monter une poignée au-dessus du cadre fait un dépassement
+  (overshoot), la descendre en dessous fait une anticipation.
+
+**Raccourcis :**
+- **Curve…** propose des courbes toutes faites : linéaire, smooth, ease in,
+  ease out, ease in+out fort, départ rapide, arrivée rapide, overshoot,
+  anticipation, ralenti puis accélération.
+- **Default** rend au segment le comportement d'origine (réglage *Ease* pour la
+  caméra, Smooth / Linear pour les paramètres).
+- **Copy curve / Paste curve** : copie la courbe d'un segment et la colle sur
+  un autre. Si des keys sont sélectionnés sur la piste (Shift-clic), elle est
+  collée sur le segment de chacun d'eux.
+- **Apply to all** : met la même courbe sur tous les segments de la piste.
+
+Les courbes voyagent avec les keyframes : copier-coller de keys, presets,
+export vidéo.
 
 ## Plein écran sans interface (Kiosk)
 

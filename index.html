@@ -138,7 +138,7 @@
   }
   .camtick.onkey{background:var(--live)}
   .camtick.sel{background:var(--signal); box-shadow:0 0 0 2px var(--ink)}
-  #spdCanvas{width:100%; height:120px; display:block; background:var(--void); border:1px solid var(--rule); margin:0 0 6px; touch-action:none; cursor:crosshair}
+  #ezCanvas{width:100%; height:130px; display:block; background:var(--void); border:1px solid var(--rule); margin:0 0 6px; touch-action:none; cursor:crosshair}
   #laneWrap{position:relative; flex:1; min-height:0}
   #laneCanvas{width:100%; height:100%; cursor:crosshair; touch-action:none}
   #laneHint{
@@ -667,28 +667,41 @@
       </p>
     </div>
 
-    <div class="sub">Speed curve</div>
-    <label class="check"><input type="checkbox" id="spdOn"> Use the speed curve</label>
-    <canvas id="spdCanvas" width="600" height="240" title="Drag points up = faster there. Double-click to add a point, alt-click to remove one. The total length of the move does not change."></canvas>
-    <p id="spdInfo" style="color:var(--ink-dim); margin:0 0 8px">Off — the camera moves at the pace of its keys.</p>
-    <div class="btns" style="margin-bottom:8px">
-      <select id="spdPreset" title="Start from a shape">
-        <option value="">Shape…</option>
-        <option value="linear">Constant</option>
-        <option value="inout">Ease in + out</option>
-        <option value="in">Ease in (accelerate)</option>
-        <option value="out">Ease out (decelerate)</option>
-        <option value="slowmid">Slow in the middle</option>
-        <option value="hold">Pause in the middle</option>
-        <option value="pulse">Rush in the middle</option>
-      </select>
-      <button id="spdReset" title="Constant speed">Reset</button>
+    <div class="sub">Easing between keyframes</div>
+    <p id="ezTarget" style="color:var(--ink); margin:0 0 6px">—</p>
+    <div class="btns" style="margin-bottom:6px">
+      <button id="ezPrev" title="Previous segment">◀</button>
+      <button id="ezNext" title="Next segment">▶</button>
+      <button id="ezViewSpeed" class="on" title="Speed graph: height = speed, handles = speed + influence at each key (After Effects style)">Speed</button>
+      <button id="ezViewValue" title="Value graph: the classic bezier — progress between the two keys over time">Value</button>
     </div>
-    <label class="check"><input type="checkbox" id="spdParams"> Also apply to parameter keyframes</label>
-    <p style="color:var(--ink-dim); margin:4px 0 0">
-      Shapes the camera's pace over the timeline (Keyframes, Orbit and Path) without
-      moving its keys. Height = speed, the dashed line is the average. With a speed curve,
-      set <b>Ease</b> to 0 so the two do not stack.
+    <canvas id="ezCanvas" width="600" height="260" title="Drag the two handles. Speed view: up/down = speed leaving / arriving at the key, left/right = influence. Value view: classic bezier handles."></canvas>
+    <p id="ezInfo" style="color:var(--ink-dim); margin:0 0 8px">—</p>
+    <div class="btns" style="margin-bottom:8px">
+      <select id="ezPreset" title="Apply a ready-made curve to this segment">
+        <option value="">Curve…</option>
+        <option value="linear">Linear</option>
+        <option value="smooth">Smooth</option>
+        <option value="in">Ease in (slow start)</option>
+        <option value="out">Ease out (slow arrival)</option>
+        <option value="inout">Strong ease in + out</option>
+        <option value="fastin">Fast start</option>
+        <option value="fastout">Fast arrival</option>
+        <option value="overshoot">Overshoot</option>
+        <option value="anticip">Anticipation</option>
+        <option value="hold">Linger, then rush</option>
+      </select>
+      <button id="ezReset" title="Back to the default (Ease slider for the camera, Smooth/Linear for parameters)">Default</button>
+    </div>
+    <div class="btns">
+      <button id="ezCopy" title="Copy this segment's curve">Copy curve</button>
+      <button id="ezPaste" title="Paste the copied curve onto this segment — or onto every selected key's segment">Paste curve</button>
+      <button id="ezAll" title="Apply this curve to every segment of this track">Apply to all</button>
+    </div>
+    <p style="color:var(--ink-dim); margin:6px 0 0">
+      Edits the segment under the playhead — on the camera after you click the
+      camera key row, on the focused parameter after you click the lane. Click
+      between two keys to pick a segment.
     </p>
   </details>
 
@@ -3061,71 +3074,45 @@ const KEY_EPS = 1e-3;               // playhead tolerance for "a key is here"
 const smooth01 = (x) => x * x * (3 - 2 * x);
 const clampNum = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-/* OVVO fork — camera SPEED curve. A time remap u = W(t) applied to the
-   camera's own clock (keyframes, orbit, path), built from an editable speed
-   profile s(t) >= 0: W(t) = ∫0..t s / ∫0..1 s, so the move always starts at
-   its first key and ends on its last within the same Duration — speeding
-   one stretch up necessarily slows the rest down. Monotone by construction
-   (speed is never negative), so the camera never runs backwards. Declared up
-   here, ahead of setCamMode()'s boot-time driveCamera(), which already reads
-   it through evaluateCamera(). */
-const SPD = { on: false, params: false, pts: [{ t: 0, s: 1 }, { t: 1, s: 1 }], lut: null };
-const SPD_N = 1024;
-function spdSpeedAt(t) {
-  /* Monotone cubic (Fritsch–Carlson) through the points: no overshoot, so a
-     speed set to 0 stays at 0 instead of dipping negative. */
-  const p = SPD.pts, n = p.length;
-  if (n === 1) return p[0].s;
-  if (t <= p[0].t) return p[0].s;
-  if (t >= p[n - 1].t) return p[n - 1].s;
-  let i = 0;
-  while (i < n - 2 && p[i + 1].t <= t) i++;
-  const d = [], m = [];
-  for (let k = 0; k < n - 1; k++) d.push((p[k + 1].s - p[k].s) / Math.max(p[k + 1].t - p[k].t, 1e-9));
-  m.push(d[0]);
-  for (let k = 1; k < n - 1; k++) m.push(d[k - 1] * d[k] <= 0 ? 0 : (d[k - 1] + d[k]) / 2);
-  m.push(d[n - 2]);
-  for (let k = 0; k < n - 1; k++) {
-    if (d[k] === 0) { m[k] = 0; m[k + 1] = 0; continue; }
-    const a = m[k] / d[k], b = m[k + 1] / d[k], h = a * a + b * b;
-    if (h > 9) { const tau = 3 / Math.sqrt(h); m[k] = tau * a * d[k]; m[k + 1] = tau * b * d[k]; }
+/* OVVO fork — per-segment easing. Every key may carry `ease`: a cubic-
+   bezier timing curve {x1, y1, x2, y2} (the CSS / After Effects model) for
+   the segment that STARTS at that key. A key without one keeps the original
+   behaviour — the Ease slider for camera keys, Smooth/Linear for envelopes —
+   and both of those are themselves exact beziers (smoothstep is
+   x1=1/3 y1=0 x2=2/3 y2=1), so the editor can always show and take over the
+   current shape without a jump. y1/y2 may leave 0..1: that is overshoot /
+   anticipation, which the camera path absorbs by running into the
+   neighbouring segment of the spline. */
+function bezEase(c, x) {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  const bx = (s) => 3 * (1 - s) * (1 - s) * s * c.x1 + 3 * (1 - s) * s * s * c.x2 + s * s * s;
+  const by = (s) => 3 * (1 - s) * (1 - s) * s * c.y1 + 3 * (1 - s) * s * s * c.y2 + s * s * s;
+  const dx = (s) => 3 * (1 - s) * (1 - s) * c.x1 + 6 * (1 - s) * s * (c.x2 - c.x1) + 3 * s * s * (1 - c.x2);
+  let s = x;
+  for (let i = 0; i < 6; i++) {                      // Newton…
+    const d = dx(s);
+    if (Math.abs(d) < 1e-6) break;
+    const n = s - (bx(s) - x) / d;
+    if (n < 0 || n > 1) break;
+    s = n;
   }
-  const h = p[i + 1].t - p[i].t, u = (t - p[i].t) / Math.max(h, 1e-9);
-  const h00 = 2 * u ** 3 - 3 * u ** 2 + 1, h10 = u ** 3 - 2 * u ** 2 + u, h01 = -2 * u ** 3 + 3 * u ** 2, h11 = u ** 3 - u ** 2;
-  return Math.max(0, h00 * p[i].s + h10 * h * m[i] + h01 * p[i + 1].s + h11 * h * m[i + 1]);
-}
-function spdBuild() {
-  const lut = new Float32Array(SPD_N + 1);
-  let acc = 0, prev = spdSpeedAt(0);
-  for (let i = 1; i <= SPD_N; i++) {
-    const cur = spdSpeedAt(i / SPD_N);
-    acc += (prev + cur) * 0.5 / SPD_N;
-    lut[i] = acc;
-    prev = cur;
+  if (Math.abs(bx(s) - x) > 1e-5) {                 // …bisection when Newton is not enough
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 40; i++) { s = (lo + hi) / 2; if (bx(s) < x) lo = s; else hi = s; }
   }
-  if (acc < 1e-9) { for (let i = 0; i <= SPD_N; i++) lut[i] = i / SPD_N; }   // all-zero speed: fall back to linear
-  else for (let i = 0; i <= SPD_N; i++) lut[i] /= acc;
-  SPD.lut = lut;
+  return by(s);
 }
-spdBuild();
-function camWarp(t) {
-  if (!SPD.on) return t;
-  const x = Math.min(Math.max(t, 0), 1) * SPD_N, i = Math.floor(x), j = Math.min(i + 1, SPD_N);
-  return SPD.lut[i] + (SPD.lut[j] - SPD.lut[i]) * (x - i);
-}
-/* Inverse: the playhead at which the camera reaches authored time u. Flat
-   stretches (speed 0) have many answers; the first one is returned. */
-function camUnwarp(u) {
-  if (!SPD.on) return u;
-  const L = SPD.lut;
-  let lo = 0, hi = SPD_N;
-  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (L[mid] < u) lo = mid; else hi = mid; }
-  const a = L[lo], b = L[hi];
-  return (lo + (b > a ? clampNum((u - a) / (b - a), 0, 1) : 0)) / SPD_N;
-}
-/* The clock parameter envelopes are sampled on — warped only if asked. */
-const animT = () => (SPD.on && SPD.params ? camWarp(playhead) : playhead);
-
+const EZ_SMOOTH = { x1: 1 / 3, y1: 0, x2: 2 / 3, y2: 1 }, EZ_LINEAR = { x1: 1 / 3, y1: 1 / 3, x2: 2 / 3, y2: 2 / 3 };
+const camEaseFallback = (k) => ({ x1: 1 / 3, y1: (1 - k) / 3, x2: 2 / 3, y2: 1 - (1 - k) / 3 });   // = ease(x, k) exactly
+const isEase = (c) => !!c && ["x1", "y1", "x2", "y2"].every((f) => Number.isFinite(c[f]));
+const cleanEase = (c) => isEase(c)
+  ? { x1: clampNum(c.x1, 0, 1), y1: clampNum(c.y1, -1, 2), x2: clampNum(c.x2, 0, 1), y2: clampNum(c.y2, -1, 2) }
+  : undefined;
+/* Retired: the whole-timeline speed curve (replaced by per-segment easing).
+   Kept as identities so every call site stays valid. */
+const SPD = { on: false, params: false };
+const camWarp = (t) => t, camUnwarp = (u) => u, animT = () => playhead;
 
 function envValue(id, t) {
   const k = ENV[id].keys;
@@ -3136,7 +3123,8 @@ function envValue(id, t) {
   while (i < k.length - 2 && k[i + 1].t <= t) i++;
   const a = k[i], b = k[i + 1];
   let u = (t - a.t) / Math.max(b.t - a.t, 1e-9);
-  if (ENV[id].smooth) u = smooth01(u);
+  if (a.ease) u = bezEase(a.ease, u);               // OVVO fork — this segment's own curve
+  else if (ENV[id].smooth) u = smooth01(u);
   return a.v + (b.v - a.v) * u;
 }
 
@@ -3616,6 +3604,7 @@ const refreshKeyBtns = () => { for (const id of ANIM) refreshKeyBtn(id); refresh
    the lane header buttons route through here, so the group markers only need
    updating in this one place. */
 function refreshEnv(id) {
+  if (ezReady && !EZ.drag) ezDraw();      // OVVO fork
   refreshKeyBtn(id);
   refreshGroups();
   laneHead();
@@ -3630,8 +3619,10 @@ function focusParam(id) {
   for (const b of document.querySelectorAll(".key.focused")) b.classList.remove("focused");
   $("p-" + id).parentElement.querySelector(".key")?.classList.add("focused");
   $("laneHint").classList.add("hide");
+  keyZone = "lane";                        // OVVO fork — focusing a parameter points the easing editor at it
   laneHead();
   drawLane();
+  if (ezReady) ezDraw();
 }
 
 /* An enveloped slider is a readout, not an input — push the curve's value
@@ -3669,7 +3660,7 @@ function setPlayhead(t) {
   drawLane();
   drawCamRow();
   drawSparkline();
-  if (spdReady) spdDraw();   // OVVO fork — speed editor playhead (flag, not a const check: setPlayhead may run before the editor exists)
+  if (ezReady) ezDraw();     // OVVO fork — the easing editor follows the playhead (flag: setPlayhead may run before the editor exists)
 }
 
 function laneHead() {
@@ -4606,6 +4597,7 @@ const camKeyIndexAt = (t) => CAMKEYS.findIndex((k) => Math.abs(k.t - t) < KEY_EP
 function addCamKey() {
   const rec = { t: camWarp(playhead), pos: camera.position.toArray(), tgt: controls.target.toArray(), fov: camera.fov };
   const i = camKeyIndexAt(camWarp(playhead));
+  if (i >= 0 && CAMKEYS[i].ease) rec.ease = CAMKEYS[i].ease;   // re-keying a pose keeps its outgoing curve
   if (i >= 0) CAMKEYS[i] = rec; else CAMKEYS.push(rec);
   CAMKEYS.sort((a, b) => a.t - b.t);
   rebuildCamCurves();
@@ -4638,11 +4630,11 @@ function sampleCam(playheadT) {
   const a = CAMKEYS[i], b = CAMKEYS[i + 1];
   const span = Math.max(b.t - a.t, 1e-9);
   const localRaw = Math.min(1, Math.max(0, (playheadT - a.t) / span));
-  const localU = ease(localRaw, V.ease);
+  const localU = a.ease ? bezEase(a.ease, localRaw) : ease(localRaw, V.ease);   // OVVO fork — per-segment curve
   const fov = a.fov + (b.fov - a.fov) * localU;
 
   if (camSmooth && n >= 3 && camPosCurve) {
-    const curveU = (i + localU) / (n - 1);   // THREE parametrises curves uniformly by point INDEX, not by our `t`
+    const curveU = clampNum((i + localU) / (n - 1), 0, 1);   // OVVO fork: clamped — overshoot on the end segments   // THREE parametrises curves uniformly by point INDEX, not by our `t`
     return { pos: camPosCurve.getPoint(curveU).toArray(), tgt: camTgtCurve.getPoint(curveU).toArray(), fov };
   }
   const lerp3 = (p, q, u) => [p[0] + (q[0] - p[0]) * u, p[1] + (q[1] - p[1]) * u, p[2] + (q[2] - p[2]) * u];
@@ -5248,6 +5240,7 @@ function refreshCamUI() {
     ? `${n} camera keyframe${n === 1 ? "" : "s"}${n < 3 ? " — add a 3rd for a curved path" : ""}.`
     : "No camera keyframes — camera stays under manual orbit control.";
   drawCamRow();
+  if (ezReady) ezDraw();
 }
 $("camAddKey").onclick = addCamKey;
 $("camRemoveKey").onclick = removeCamKeyAtPlayhead;
@@ -6998,7 +6991,7 @@ function keysCopy(zone = keyZone) {
     const ks = camSelected();
     if (!ks.length) { setStatus("No camera keys to copy.", true); return false; }
     const t0 = Math.min(...ks.map((k) => k.t));
-    clipSet({ kind: "cam", keys: ks.map((k) => ({ dt: k.t - t0, pos: [...k.pos], tgt: [...k.tgt], fov: k.fov })) });
+    clipSet({ kind: "cam", keys: ks.map((k) => ({ dt: k.t - t0, pos: [...k.pos], tgt: [...k.tgt], fov: k.fov, ease: k.ease })) });
     setStatus(`Copied ${ks.length} camera key${ks.length === 1 ? "" : "s"} — Paste puts them at the playhead.`);
     return true;
   }
@@ -7008,7 +7001,7 @@ function keysCopy(zone = keyZone) {
   const el = $("p-" + focused), lo = parseFloat(el.min), hi = parseFloat(el.max);
   const t0 = Math.min(...ks.map((k) => k.t));
   clipSet({ kind: "param", src: focused, smooth: envOf(focused).smooth,
-            keys: ks.map((k) => ({ dt: k.t - t0, u: (k.v - lo) / Math.max(hi - lo, 1e-9), v: k.v })) });
+            keys: ks.map((k) => ({ dt: k.t - t0, u: (k.v - lo) / Math.max(hi - lo, 1e-9), v: k.v, ease: k.ease })) });
   setStatus(`Copied ${ks.length} key${ks.length === 1 ? "" : "s"} from ${focused}.`);
   return true;
 }
@@ -7023,7 +7016,7 @@ function keysPaste() {
     for (const k of c.keys) {
       const t = T0 + k.dt;
       if (t > 1 + 1e-6) continue;
-      const rec = { t: Math.min(t, 1), pos: [...k.pos], tgt: [...k.tgt], fov: k.fov ?? camera.fov };
+      const rec = { t: Math.min(t, 1), pos: [...k.pos], tgt: [...k.tgt], fov: k.fov ?? camera.fov, ...(isEase(k.ease) ? { ease: cleanEase(k.ease) } : {}) };
       const i = camKeyIndexAt(rec.t);
       if (i >= 0) CAMKEYS[i] = rec; else CAMKEYS.push(rec);
       camSel.add(rec); n++;
@@ -7049,6 +7042,7 @@ function keysPaste() {
     const i = e.keys.findIndex((q) => Math.abs(q.t - tt) < KEY_EPS);
     let rec;
     if (i >= 0) { e.keys[i].v = v; rec = e.keys[i]; } else { rec = { t: tt, v }; e.keys.push(rec); }
+    if (isEase(k.ease)) rec.ease = cleanEase(k.ease);
     laneSel.add(rec); n++;
   }
   e.keys.sort((a, b) => a.t - b.t);
@@ -7105,151 +7099,214 @@ addEventListener("keydown", (e) => {
 });
 
 /* ------------------------------------------------------------------ *
- * Speed curve editor (OVVO fork) — the core (SPD, camWarp) lives up top.
+ * Segment easing editor (OVVO fork) — core (bezEase) lives up top.
+ *
+ * Target = the segment under the playhead, on the track last clicked:
+ * camera key row ("cam") or the lane's focused parameter ("lane"). Two views
+ * of the SAME bezier: Speed (After Effects speed graph — each handle is the
+ * speed leaving / arriving at a key, its horizontal reach the influence) and
+ * Value (progress over time, the classic CSS curve). Speed is relative to
+ * the segment's average: 1 = what Linear would do.
  * ------------------------------------------------------------------ */
-var spdReady = false;                 // var on purpose: hoisted, readable from setPlayhead() at any point of boot
-const spdCv = $("spdCanvas"), spdG = spdCv.getContext("2d");
-let spdDrag = null;
-const SPD_PAD = 14;
+var ezReady = false;                  // var on purpose: read by setPlayhead() from any point of boot
+const ezCv = $("ezCanvas"), ezG = ezCv.getContext("2d");
+const EZ = { view: "speed", drag: null, clip: null };
+const EZ_PRESETS = {
+  linear: EZ_LINEAR, smooth: EZ_SMOOTH,
+  in: { x1: 0.6, y1: 0, x2: 2 / 3, y2: 1 }, out: { x1: 1 / 3, y1: 0, x2: 0.4, y2: 1 },
+  inout: { x1: 0.75, y1: 0, x2: 0.25, y2: 1 },
+  fastin: { x1: 0.2, y1: 0.6, x2: 0.6, y2: 1 }, fastout: { x1: 0.4, y1: 0, x2: 0.8, y2: 0.4 },
+  overshoot: { x1: 0.3, y1: 0.5, x2: 0.55, y2: 1.35 }, anticip: { x1: 0.45, y1: -0.35, x2: 0.7, y2: 0.5 },
+  hold: { x1: 1, y1: 0, x2: 1, y2: 0 },
+};
 
-function spdNormalise() {
-  /* Mean speed 1, so the curve reads as "× average" — done on release, not
-     during the drag, so the point stays under the pointer while it moves. */
-  let acc = 0;
-  for (let i = 0; i <= 256; i++) acc += spdSpeedAt(i / 256) / 257;
-  if (acc > 1e-6) for (const p of SPD.pts) p.s /= acc;
-}
-function spdChanged(final) {
-  if (final) spdNormalise();
-  spdBuild();
-  spdDraw();
-  if (SPD.on) { driveCamera(); pushUniforms(); syncSliders(); drawCamRow(); drawLane(); }
-}
-const spdMax = () => Math.max(2.5, ...SPD.pts.map((p) => p.s * 1.15));
-function spdGeom() {
-  const W = spdCv.width, H = spdCv.height, s = W / Math.max(spdCv.clientWidth, 1), pad = SPD_PAD * s, m = spdMax();
-  return {
-    W, H, s, pad, m,
-    x: (t) => pad + t * (W - 2 * pad),
-    y: (v) => H - pad - (v / m) * (H - 2 * pad),
-    tAt: (cx) => clampNum((cx * s - pad) / (W - 2 * pad), 0, 1),
-    vAt: (cy) => clampNum(((H - pad - cy * s) / (H - 2 * pad)) * m, 0, 50),
+function ezTarget() {
+  const pickSeg = (keys, t) => {
+    if (keys.length < 2) return -1;
+    let i = 0;
+    while (i < keys.length - 2 && keys[i + 1].t <= t) i++;
+    return i;
   };
-}
-function spdDraw() {
-  const g = spdGeom(), c = spdG;
-  c.clearRect(0, 0, g.W, g.H);
-  const css = (n, f) => CSSVAR(n, f);
-  c.lineWidth = g.s;
-  c.strokeStyle = css("--rule", "#1e222a");
-  for (let i = 0; i <= 4; i++) { const x = g.x(i / 4); c.beginPath(); c.moveTo(x, 0); c.lineTo(x, g.H); c.stroke(); }
-  c.setLineDash([4 * g.s, 4 * g.s]); c.strokeStyle = css("--ink-dim", "#737b86");
-  c.beginPath(); c.moveTo(g.x(0), g.y(1)); c.lineTo(g.x(1), g.y(1)); c.stroke(); c.setLineDash([]);
-  /* camera keys, where the playhead reaches them */
-  c.fillStyle = css("--signal", "#9fe0d4");
-  for (const k of CAMKEYS) c.fillRect(g.x(camUnwarp(k.t)) - g.s, g.H - g.pad + 2 * g.s, 2 * g.s, g.pad - 4 * g.s);
-  /* position curve W(t), faint, scaled to the full height */
-  c.strokeStyle = css("--edit", "#b48ce8"); c.globalAlpha = 0.35; c.beginPath();
-  for (let i = 0; i <= 100; i++) {
-    const t = i / 100, X = g.x(t), Y = g.H - g.pad - (SPD.lut[Math.round(t * SPD_N)]) * (g.H - 2 * g.pad);
-    i ? c.lineTo(X, Y) : c.moveTo(X, Y);
+  if (keyZone === "cam" || !focused) {
+    const i = pickSeg(CAMKEYS, camWarp(playhead));
+    if (i < 0) return { none: "Camera: add at least two keys to get a segment." };
+    return { kind: "cam", i, keys: CAMKEYS, a: CAMKEYS[i], b: CAMKEYS[i + 1],
+             fallback: camEaseFallback(V.ease), label: `Camera · key ${i + 1} → ${i + 2}` };
   }
-  c.stroke(); c.globalAlpha = 1;
-  /* speed */
-  const tone = SPD.on ? css("--signal", "#9fe0d4") : css("--ink-dim", "#737b86");
-  c.beginPath(); c.moveTo(g.x(0), g.y(0));
-  for (let i = 0; i <= 200; i++) { const t = i / 200; c.lineTo(g.x(t), g.y(spdSpeedAt(t))); }
-  c.lineTo(g.x(1), g.y(0)); c.closePath();
-  c.globalAlpha = 0.15; c.fillStyle = tone; c.fill(); c.globalAlpha = 1;
-  c.strokeStyle = tone; c.lineWidth = 1.5 * g.s; c.beginPath();
-  for (let i = 0; i <= 200; i++) { const t = i / 200, X = g.x(t), Y = g.y(spdSpeedAt(t)); i ? c.lineTo(X, Y) : c.moveTo(X, Y); }
-  c.stroke();
-  for (const p of SPD.pts) {
-    c.fillStyle = p === spdDrag?.p ? css("--live", "#ff5a3c") : css("--ink", "#cfd4da");
-    c.beginPath(); c.arc(g.x(p.t), g.y(p.s), 4 * g.s, 0, Math.PI * 2); c.fill();
-  }
-  /* playhead */
-  c.strokeStyle = css("--live", "#ff5a3c"); c.lineWidth = g.s; c.globalAlpha = 0.7;
-  c.beginPath(); c.moveTo(g.x(playhead), 0); c.lineTo(g.x(playhead), g.H); c.stroke(); c.globalAlpha = 1;
-  $("spdInfo").textContent = SPD.on
-    ? `Speed here ×${spdSpeedAt(playhead).toFixed(2)} · camera at ${(camWarp(playhead) * 100).toFixed(0)}% of its move`
-    : "Off — the camera moves at the pace of its keys.";
+  if (!focused) return { none: "Click a parameter name (or the camera key row) to pick a track." };
+  const e = envOf(focused), i = pickSeg(e.keys, animT());
+  if (i < 0) return { none: `${paramLabel(focused)}: add at least two keys to get a segment.` };
+  return { kind: "lane", i, keys: e.keys, a: e.keys[i], b: e.keys[i + 1],
+           fallback: e.smooth ? EZ_SMOOTH : EZ_LINEAR, label: `${paramLabel(focused)} · key ${i + 1} → ${i + 2}` };
 }
-function spdFit() {
-  const s = Math.min(devicePixelRatio || 1, 2);
-  spdCv.width = Math.max(1, Math.round(spdCv.clientWidth * s));
-  spdCv.height = Math.max(1, Math.round(spdCv.clientHeight * s));
-  spdDraw();
-}
-spdCv.addEventListener("pointerdown", (ev) => {
-  const r = spdCv.getBoundingClientRect(), cx = ev.clientX - r.left, cy = ev.clientY - r.top, g = spdGeom();
-  const hit = SPD.pts.find((p) => Math.hypot(g.x(p.t) - cx * g.s, g.y(p.s) - cy * g.s) < 9 * g.s);
-  if (!hit) return;
-  const i = SPD.pts.indexOf(hit);
-  if (ev.altKey) {
-    if (i > 0 && i < SPD.pts.length - 1) { SPD.pts.splice(i, 1); spdChanged(true); }
-    return;
-  }
-  spdDrag = { p: hit, i };
-  spdCv.setPointerCapture(ev.pointerId);
-  spdDraw();
-});
-spdCv.addEventListener("pointermove", (ev) => {
-  if (!spdDrag) return;
-  const r = spdCv.getBoundingClientRect(), g = spdGeom(), { p, i } = spdDrag, n = SPD.pts.length;
-  p.s = g.vAt(ev.clientY - r.top);
-  if (i > 0 && i < n - 1) p.t = clampNum(g.tAt(ev.clientX - r.left), SPD.pts[i - 1].t + 0.01, SPD.pts[i + 1].t - 0.01);   // ends stay at 0 and 1
-  if (!SPD.on) { SPD.on = true; $("spdOn").checked = true; }
-  spdChanged(false);
-});
-for (const t of ["pointerup", "pointercancel"]) spdCv.addEventListener(t, () => { if (spdDrag) { spdDrag = null; spdChanged(true); } });
-spdCv.addEventListener("dblclick", (ev) => {
-  const r = spdCv.getBoundingClientRect(), g = spdGeom();
-  const t = g.tAt(ev.clientX - r.left);
-  if (SPD.pts.some((p) => Math.abs(p.t - t) < 0.015)) return;
-  SPD.pts.push({ t, s: g.vAt(ev.clientY - r.top) });
-  SPD.pts.sort((a, b) => a.t - b.t);
-  if (!SPD.on) { SPD.on = true; $("spdOn").checked = true; }
-  spdChanged(true);
-});
-const SPD_PRESETS = {
-  linear: [[0, 1], [1, 1]],
-  inout: [[0, 0], [0.5, 2], [1, 0]],
-  in: [[0, 0], [1, 2]],
-  out: [[0, 2], [1, 0]],
-  slowmid: [[0, 1.6], [0.5, 0.25], [1, 1.6]],
-  hold: [[0, 1.3], [0.4, 1.3], [0.45, 0], [0.55, 0], [0.6, 1.3], [1, 1.3]],
-  pulse: [[0, 0.6], [0.4, 0.6], [0.5, 3], [0.6, 0.6], [1, 0.6]],
-};
-function spdSetPts(arr) { SPD.pts = arr.map(([t, s]) => ({ t, s })); spdChanged(true); }
-$("spdPreset").onchange = () => {
-  const v = $("spdPreset").value;
-  $("spdPreset").value = "";
-  if (!SPD_PRESETS[v]) return;
-  SPD.on = true; $("spdOn").checked = true;
-  spdSetPts(SPD_PRESETS[v]);
-};
-$("spdReset").onclick = () => spdSetPts(SPD_PRESETS.linear);
-$("spdOn").onchange = () => { SPD.on = $("spdOn").checked; spdChanged(false); refreshKeyBtns(); };
-$("spdParams").onchange = () => { SPD.params = $("spdParams").checked; spdChanged(false); refreshKeyBtns(); };
-addEventListener("resize", spdFit);
-document.querySelector('.mod[data-group="camera"]').addEventListener("toggle", spdFit);
-spdFit();
-spdReady = true;
+const ezCurve = (T) => T.a.ease ?? T.fallback;
 
-/* Preset — additive. */
-function spdSerialize() { return { on: SPD.on, params: SPD.params, pts: SPD.pts.map((p) => [+p.t.toFixed(5), +p.s.toFixed(5)]) }; }
-function spdApplyPreset(o) {
-  if (!o || typeof o !== "object") return;
-  if (Array.isArray(o.pts) && o.pts.length >= 2) {
-    const pts = o.pts.filter((a) => Array.isArray(a) && Number.isFinite(a[0]) && Number.isFinite(a[1]))
-      .map(([t, s]) => ({ t: clampNum(t, 0, 1), s: clampNum(s, 0, 50) })).sort((a, b) => a.t - b.t);
-    if (pts.length >= 2) { pts[0].t = 0; pts[pts.length - 1].t = 1; SPD.pts = pts; }
-  }
-  SPD.on = !!o.on; SPD.params = !!o.params;
-  $("spdOn").checked = SPD.on; $("spdParams").checked = SPD.params;
-  spdBuild(); spdDraw(); drawCamRow();
+function ezCommit(T, c) {
+  if (c) T.a.ease = { ...c }; else delete T.a.ease;
+  ezAfterEdit(T);
 }
+function ezAfterEdit(T) {
+  if (T.kind === "cam") { driveCamera(); drawCamRow(); }
+  else refreshEnv(focused);
+  ezDraw();
+}
+
+function ezGeom() {
+  const W = ezCv.width, H = ezCv.height, s = W / Math.max(ezCv.clientWidth, 1), pad = 16 * s;
+  return { W, H, s, pad, x: (u) => pad + u * (W - 2 * pad), ux: (cx) => (cx * s - pad) / (W - 2 * pad) };
+}
+/* relative speed at local time x — derivative of the value curve */
+function ezSpeed(c, x) {
+  const h = 1e-3, a = clampNum(x - h, 0, 1), b = clampNum(x + h, 0, 1);
+  return (bezEase(c, b) - bezEase(c, a)) / Math.max(b - a, 1e-9);
+}
+const ezS0 = (c) => (c.x1 > 1e-3 ? c.y1 / c.x1 : ezSpeed(c, 0));
+const ezS1 = (c) => (c.x2 < 1 - 1e-3 ? (1 - c.y2) / (1 - c.x2) : ezSpeed(c, 1));
+function ezRange(c) {
+  if (EZ.view === "value") return { lo: Math.min(-0.1, c.y1, c.y2) - 0.05, hi: Math.max(1.1, c.y1, c.y2) + 0.05 };
+  let hi = 2, lo = 0;
+  for (let i = 0; i <= 60; i++) { const v = ezSpeed(c, i / 60) * 1.15; hi = Math.max(hi, v); lo = Math.min(lo, v); }
+  hi = Math.max(hi, ezS0(c) * 1.15, ezS1(c) * 1.15);
+  return { lo, hi: Math.min(hi, 20) };
+}
+function ezHandles(c, g, r) {
+  const y = (v) => g.H - g.pad - ((v - r.lo) / (r.hi - r.lo)) * (g.H - 2 * g.pad);
+  if (EZ.view === "value") return { y, h1: [g.x(c.x1), y(c.y1)], h2: [g.x(c.x2), y(c.y2)], o1: [g.x(0), y(0)], o2: [g.x(1), y(1)] };
+  const s0 = ezS0(c), s1 = ezS1(c);
+  return { y, h1: [g.x(c.x1), y(s0)], h2: [g.x(c.x2), y(s1)], o1: [g.x(0), y(s0)], o2: [g.x(1), y(s1)] };
+}
+
+function ezDraw() {
+  const T = ezTarget(), g = ezGeom(), cx = ezG;
+  cx.clearRect(0, 0, g.W, g.H);
+  $("ezTarget").textContent = T.none ?? T.label + (T.a.ease ? "" : "  (default curve)");
+  for (const id of ["ezCopy", "ezAll", "ezReset", "ezPreset", "ezPrev", "ezNext"]) $(id).disabled = !!T.none;
+  $("ezPaste").disabled = !!T.none || !EZ.clip;
+  $("ezViewSpeed").classList.toggle("on", EZ.view === "speed");
+  $("ezViewValue").classList.toggle("on", EZ.view === "value");
+  if (T.none) { $("ezInfo").textContent = ""; return; }
+  const c = EZ.drag ? EZ.drag.c : ezCurve(T), r = EZ.drag ? EZ.drag.range : ezRange(c), H = ezHandles(c, g, r);
+  const col = (n, f) => CSSVAR(n, f);
+  cx.lineWidth = g.s;
+  cx.strokeStyle = col("--rule", "#1e222a");
+  for (let i = 0; i <= 4; i++) { const x = g.x(i / 4); cx.beginPath(); cx.moveTo(x, 0); cx.lineTo(x, g.H); cx.stroke(); }
+  cx.setLineDash([4 * g.s, 4 * g.s]); cx.strokeStyle = col("--ink-dim", "#737b86");
+  for (const v of [0, 1]) { cx.beginPath(); cx.moveTo(g.x(0), H.y(v)); cx.lineTo(g.x(1), H.y(v)); cx.stroke(); }
+  cx.setLineDash([]);
+  const tone = T.a.ease ? col("--signal", "#9fe0d4") : col("--ink-dim", "#737b86");
+  const f = (u) => (EZ.view === "value" ? bezEase(c, u) : ezSpeed(c, u));
+  if (EZ.view === "speed") {
+    cx.beginPath(); cx.moveTo(g.x(0), H.y(0));
+    for (let i = 0; i <= 160; i++) cx.lineTo(g.x(i / 160), H.y(f(i / 160)));
+    cx.lineTo(g.x(1), H.y(0)); cx.closePath();
+    cx.globalAlpha = 0.14; cx.fillStyle = tone; cx.fill(); cx.globalAlpha = 1;
+  }
+  cx.strokeStyle = tone; cx.lineWidth = 1.6 * g.s; cx.beginPath();
+  for (let i = 0; i <= 160; i++) { const X = g.x(i / 160), Y = H.y(f(i / 160)); i ? cx.lineTo(X, Y) : cx.moveTo(X, Y); }
+  cx.stroke();
+  cx.strokeStyle = col("--edit", "#b48ce8"); cx.lineWidth = g.s;
+  for (const [o, h] of [[H.o1, H.h1], [H.o2, H.h2]]) { cx.beginPath(); cx.moveTo(...o); cx.lineTo(...h); cx.stroke(); }
+  for (const [k, h] of [["h1", H.h1], ["h2", H.h2]]) {
+    cx.fillStyle = EZ.drag?.h === k ? col("--live", "#ff5a3c") : col("--edit", "#b48ce8");
+    cx.beginPath(); cx.arc(h[0], h[1], 5 * g.s, 0, Math.PI * 2); cx.fill();
+  }
+  const tNow = T.kind === "cam" ? camWarp(playhead) : animT();
+  const u = (tNow - T.a.t) / Math.max(T.b.t - T.a.t, 1e-9);
+  if (u >= 0 && u <= 1) {
+    cx.strokeStyle = col("--live", "#ff5a3c"); cx.globalAlpha = 0.7;
+    cx.beginPath(); cx.moveTo(g.x(u), 0); cx.lineTo(g.x(u), g.H); cx.stroke(); cx.globalAlpha = 1;
+  }
+  const sp = (v) => v.toFixed(2);
+  $("ezInfo").textContent = `t ${T.a.t.toFixed(2)} → ${T.b.t.toFixed(2)} · leaving ×${sp(ezS0(c))} · arriving ×${sp(ezS1(c))}` +
+    (u >= 0 && u <= 1 ? ` · now ×${sp(ezSpeed(c, u))}` : "");
+}
+
+function ezFit() {
+  const s = Math.min(devicePixelRatio || 1, 2);
+  ezCv.width = Math.max(1, Math.round(ezCv.clientWidth * s));
+  ezCv.height = Math.max(1, Math.round(ezCv.clientHeight * s));
+  ezDraw();
+}
+
+ezCv.addEventListener("pointerdown", (ev) => {
+  const T = ezTarget();
+  if (T.none) return;
+  const r = ezCv.getBoundingClientRect(), g = ezGeom(), px = (ev.clientX - r.left) * g.s, py = (ev.clientY - r.top) * g.s;
+  const c = ezCurve(T), range = ezRange(c), H = ezHandles(c, g, range);
+  const d1 = Math.hypot(H.h1[0] - px, H.h1[1] - py), d2 = Math.hypot(H.h2[0] - px, H.h2[1] - py);
+  if (Math.min(d1, d2) > 16 * g.s) return;
+  /* the axis range is frozen for the drag, so it does not rescale under the pointer */
+  EZ.drag = { h: d1 <= d2 ? "h1" : "h2", T, c: { ...c }, range };
+  ezCv.setPointerCapture(ev.pointerId);
+  ezDraw();
+});
+ezCv.addEventListener("pointermove", (ev) => {
+  const D = EZ.drag;
+  if (!D) return;
+  const r = ezCv.getBoundingClientRect(), g = ezGeom();
+  const ux = clampNum(g.ux(ev.clientX - r.left), 0, 1);
+  const v = D.range.lo + ((g.H - g.pad - (ev.clientY - r.top) * g.s) / (g.H - 2 * g.pad)) * (D.range.hi - D.range.lo);
+  const c = D.c;
+  if (EZ.view === "value") {
+    if (D.h === "h1") { c.x1 = ux; c.y1 = clampNum(v, -1, 2); } else { c.x2 = ux; c.y2 = clampNum(v, -1, 2); }
+  } else if (D.h === "h1") {
+    c.x1 = clampNum(ux, 0.01, 1); c.y1 = clampNum(Math.max(v, 0) * c.x1, -1, 2);          // speed × influence
+  } else {
+    c.x2 = clampNum(ux, 0, 0.99); c.y2 = clampNum(1 - Math.max(v, 0) * (1 - c.x2), -1, 2);
+  }
+  D.T.a.ease = { ...c };
+  ezAfterEdit(D.T);
+});
+for (const t of ["pointerup", "pointercancel"]) ezCv.addEventListener(t, () => { if (EZ.drag) { EZ.drag = null; ezDraw(); } });
+
+$("ezViewSpeed").onclick = () => { EZ.view = "speed"; ezDraw(); };
+$("ezViewValue").onclick = () => { EZ.view = "value"; ezDraw(); };
+$("ezPreset").onchange = () => {
+  const v = $("ezPreset").value; $("ezPreset").value = "";
+  const T = ezTarget();
+  if (!T.none && EZ_PRESETS[v]) ezCommit(T, EZ_PRESETS[v]);
+};
+$("ezReset").onclick = () => { const T = ezTarget(); if (!T.none) ezCommit(T, null); };
+$("ezCopy").onclick = () => { const T = ezTarget(); if (T.none) return; EZ.clip = { ...ezCurve(T) }; setStatus("Curve copied."); ezDraw(); };
+$("ezPaste").onclick = () => {
+  const T = ezTarget();
+  if (T.none || !EZ.clip) return;
+  /* With keys selected on this track: onto each selected key's segment;
+     otherwise onto the segment under the playhead. */
+  const sel = T.kind === "cam" ? camSel : laneSel;
+  const targets = T.keys.slice(0, -1).filter((k) => sel.has(k));
+  for (const k of targets.length ? targets : [T.a]) k.ease = { ...EZ.clip };
+  setStatus(`Curve pasted on ${targets.length || 1} segment${(targets.length || 1) === 1 ? "" : "s"}.`);
+  ezAfterEdit(T);
+};
+$("ezAll").onclick = () => {
+  const T = ezTarget();
+  if (T.none) return;
+  const c = ezCurve(T);
+  for (const k of T.keys.slice(0, -1)) k.ease = { ...c };
+  setStatus(`Curve applied to all ${T.keys.length - 1} segments.`);
+  ezAfterEdit(T);
+};
+const ezStep = (dir) => {
+  const T = ezTarget();
+  if (T.none) return;
+  const j = clampNum(T.i + dir, 0, T.keys.length - 2), a = T.keys[j], b = T.keys[j + 1];
+  setPlayhead((a.t + b.t) / 2);
+};
+$("ezPrev").onclick = () => ezStep(-1);
+$("ezNext").onclick = () => ezStep(1);
+/* clicking empty space in the camera row picks that camera segment */
+$("camRow").addEventListener("click", (ev) => {
+  if (ev.target !== $("camRow")) return;
+  const r = $("camRow").getBoundingClientRect();
+  keyZone = "cam";
+  setPlayhead(clampNum((ev.clientX - r.left) / Math.max(r.width, 1), 0, 1));
+});
+for (const el of [$("laneCanvas"), $("camRow")]) el.addEventListener("pointerdown", () => setTimeout(ezDraw, 0));
+addEventListener("resize", ezFit);
+document.querySelector('.mod[data-group="camera"]').addEventListener("toggle", ezFit);
+ezFit();
+ezReady = true;
 
 /* ------------------------------------------------------------------ *
  * Transport + live loop
@@ -7289,7 +7346,7 @@ function frame(now) {
     driveCamera();      // playback drives every frame; paused frames do NOT — that was the bug (see Phase 1 in NOTES)
     drawCamRow();
     if (VM.proc) vmDrawPlot();
-    if (SPD.on) spdDraw();
+    if (ezReady) ezDraw();
     audMeters();
     drawLane();
     drawSparkline();
@@ -7609,7 +7666,7 @@ function serialize() {
     envs[id] = {
       on: !!e.on,
       smooth: e.smooth !== false,
-      keys: e.keys.map((k) => ({ t: +k.t.toFixed(6), v: +k.v.toFixed(6) })),
+      keys: e.keys.map((k) => ({ t: +k.t.toFixed(6), v: +k.v.toFixed(6), ...(k.ease ? { ease: k.ease } : {}) })),
     };
   }
   return {
@@ -7622,7 +7679,7 @@ function serialize() {
     selects: Object.fromEntries(SELECTS.map((id) => [id, $(id).value])),
     output: { res: $("res").value, fps: $("fps").value },   // kept for v1 readers
     camera: {
-      keys: CAMKEYS.map((k) => ({ t: +k.t.toFixed(6), pos: k.pos, tgt: k.tgt, fov: k.fov })),
+      keys: CAMKEYS.map((k) => ({ t: +k.t.toFixed(6), pos: k.pos, tgt: k.tgt, fov: k.fov, ...(k.ease ? { ease: k.ease } : {}) })),
       smooth: camSmooth,
       mode: camMode,
     },
@@ -7652,7 +7709,6 @@ function serialize() {
     tracking: tkSerialize(),
     motion: motionSerialize(),
     midi: { map: MIDI.map, smooth: MIDI.smooth },
-    speed: spdSerialize(),
     audio: {
       name: audioName,
       /* Additive, no version bump — absent means false, the old behaviour. */
@@ -7730,7 +7786,7 @@ function applyPreset(o) {
     const e = envOf(id);
     e.keys = (Array.isArray(src?.keys) ? src.keys : [])
       .filter((k) => Number.isFinite(k?.t) && Number.isFinite(k?.v))
-      .map((k) => ({ t: clamp(k.t, 0, 1), v: clamp(k.v, lo, hi) }))
+      .map((k) => ({ t: clamp(k.t, 0, 1), v: clamp(k.v, lo, hi), ...(isEase(k.ease) ? { ease: cleanEase(k.ease) } : {}) }))
       .sort((a, b) => a.t - b.t);
     e.smooth = src.smooth !== false;
     e.on = !!src.on && e.keys.length > 0;         // an empty envelope cannot be armed
@@ -7888,6 +7944,7 @@ function applyPreset(o) {
         pos: k.pos.map(Number),
         tgt: k.tgt.map(Number),
         fov: Number.isFinite(k.fov) ? clamp(k.fov, 10, 120) : 50,
+        ...(isEase(k.ease) ? { ease: cleanEase(k.ease) } : {}),
       }))
       .sort((a, b) => a.t - b.t);
     camSmooth = o.camera.smooth !== false;
@@ -7974,7 +8031,7 @@ function applyPreset(o) {
 
   tkApplyPreset(o.tracking);   // OVVO fork — absent means "leave as is"
   motionApplyPreset(o.motion);
-  spdApplyPreset(o.speed);
+  if (ezReady) ezDraw();
   /* MIDI bindings ride along, but an empty or absent block never wipes the
      mapping this workstation already has. */
   if (o.midi?.map && Object.keys(o.midi.map).length && midiLoadObj(o.midi)) { midiSave(); midiRefreshUI(); }
@@ -8547,7 +8604,7 @@ if (DEBUG) {
     get rgSlot(){ return rgSlot; },
     get MAX_REGIONS(){ return MAX_REGIONS; },
     get playhead(){ return playhead; },
-    get SPD(){ return SPD; }, camWarp, camUnwarp, spdSetPts, keysCopy, keysPaste, keysDelete, keysSelectAll, get laneSel(){ return laneSel; }, get camSel(){ return camSel; }, get KEYCLIP(){ return KEYCLIP; }, get ENV(){ return ENV; },
+    get EZ(){ return EZ; }, ezTarget, bezEase, ezCommit, ezDraw, EZ_PRESETS, get keyZone(){ return keyZone; }, set keyZone(v){ keyZone = v; }, keysCopy, keysPaste, keysDelete, keysSelectAll, get laneSel(){ return laneSel; }, get camSel(){ return camSel; }, get KEYCLIP(){ return KEYCLIP; }, get ENV(){ return ENV; },
     get MIDI(){ return MIDI; }, midiHandle, midiSetLearn, midiSetPending, midiParseBle, setKiosk, midiRefreshUI,
     get VM(){ return VM; }, get PATH(){ return PATH; }, vmAnalyse, vmApply, vmAt, vmProcess, pathSetFrames, pathLoadFiles, pathWorldAt, pathEvaluate, pathBake, parseColmapImages, parseTransformsJson, parseChan,
     get TK(){ return TK; }, tkApply, tkRestore, tkPushSample, tkUpdate, tkTakeAt, tkStart, tkStop, tkOnFace, tkOnOrient,
