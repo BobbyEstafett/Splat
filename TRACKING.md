@@ -127,6 +127,32 @@ avec **Load track…** :
 | `.gltf` / `.glb` avec une caméra animée | Blender (Motion Tracking → Solve, puis export glTF avec l'animation), Cinema 4D, Houdini… |
 | `.chan` | Nuke (et After Effects via un script d'export) : `frame tx ty tz rx ry rz [vfov]`, ordre ZXY |
 
+#### Depuis After Effects (copier-coller)
+
+1. Dans After Effects, tracker le plan avec **3D Camera Tracker**, puis
+   **Create Camera**.
+2. Déplier la caméra créée (`U` affiche les propriétés animées). Sélectionner
+   les keyframes de **Position**, **Orientation** (et/ou X/Y/Z Rotation) et
+   **Zoom**, plus **Point of Interest** pour une caméra à deux nœuds.
+3. `Ctrl/Cmd+C`.
+4. Dans Gausseous : **Paste from After Effects**. Si le navigateur refuse
+   l'accès au presse-papier, une zone de texte s'ouvre : y coller avec
+   `Ctrl/Cmd+V`, puis **Import**.
+
+La cadence de la composition est reprise automatiquement, et la focale vient
+du Zoom. On peut aussi coller ces données dans un fichier `.txt` et le charger
+avec **Load track…**.
+
+Rester en alignement **Relative** : les unités d'After Effects sont des pixels,
+sans rapport avec l'échelle du splat. **Scale** règle l'ampleur du déplacement,
+et les rotations restent exactes.
+
+**À vérifier sur le premier plan importé.** La convention de rotation d'After
+Effects est la seule à ne pas avoir été testée sur un vrai After Effects. Sur un
+plan simple (un panoramique vers la droite), le splat doit tourner dans le même
+sens. Si le panoramique ou le tilt sortent sur le mauvais axe, changer
+**AE rotation** (X→Y→Z / Z→Y→X) : la trajectoire est recalculée tout de suite.
+
 La trajectoire devient le mode caméra **Path**, à côté de Manual / Keyframes /
 Orbit. Position, orientation (roulis compris) et focale sont rejouées.
 

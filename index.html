@@ -811,7 +811,18 @@
     <div class="sub">From a camera track — 3D import</div>
     <div class="btns" style="margin-bottom:9px">
       <button id="pathLoad" title="transforms.json (Nerfstudio / Instant-NGP…), COLMAP images.txt (+ cameras.txt), glTF / GLB with an animated camera (Blender, C4D, Houdini…), Nuke .chan — select several files at once for COLMAP">Load track…</button>
+      <button id="aePaste" title="In After Effects: select the camera's keyframes (Position, Orientation / Rotation, Zoom — Point of Interest for a two-node camera), Ctrl/Cmd+C, then click here">Paste from After Effects</button>
       <button id="pathClear">Clear</button>
+    </div>
+    <div id="aeBox" class="hide" style="margin:0 0 9px">
+      <textarea id="aeText" rows="5" spellcheck="false" placeholder="Paste the After Effects keyframe data here (Ctrl/Cmd+V)" style="width:100%; background:var(--void); color:var(--ink); border:1px solid var(--rule); font:inherit; font-size:10px; padding:6px"></textarea>
+      <div class="btns" style="margin-top:6px"><button id="aeImport">Import</button><button id="aeCancel">Cancel</button></div>
+    </div>
+    <div class="btns" style="margin-bottom:9px">
+      <select id="aeOrder" title="After Effects rotation convention — only change it if a pan or tilt comes out on the wrong axis">
+        <option value="ZYX" selected>AE rotation: X→Y→Z (default)</option>
+        <option value="XYZ">AE rotation: Z→Y→X</option>
+      </select>
     </div>
     <p id="pathInfo" style="color:var(--ink-dim); margin:0 0 9px">No camera track.</p>
     <div class="btns" style="margin-bottom:9px">
@@ -824,6 +835,7 @@
         <option value="undoNs">Nerfstudio → COLMAP</option>
         <option value="zup">Z-up → Y-up</option>
         <option value="yup">Y-up → Z-up</option>
+        <option value="ydown">Y-down → Y-up (After Effects, OpenCV)</option>
       </select>
       <button id="pathAnchor" class="path-rel" title="Start the track from where the camera is now">Re-anchor here</button>
     </div>
@@ -6313,11 +6325,17 @@ async function pathLoadFiles(files) {
     if (glb) { res = await parseGltf(await glb.arrayBuffer()); label = glb.name; }
     else if (chan) { res = parseChan(await chan.text()); label = chan.name; }
     else if (json) { res = parseTransformsJson(JSON.parse(await json.text())); label = json.name; }
+    else if (byName(/\.txt$/i) && /Keyframe Data/i.test(await byName(/\.txt$/i).text())) {   // AE keyframes saved to a text file
+      const f = byName(/\.txt$/i);
+      res = parseAEKeyframes(await f.text(), $("aeOrder").value);
+      PATH.fps = res.fps;
+      label = "After Effects camera · " + res.info;
+    }
     else if (images) {
       const camsF = byName(/cameras\.txt$/i);
       res = parseColmapImages(await images.text(), camsF ? parseColmapCameras(await camsF.text()) : null);
       label = images.name + (camsF ? " + cameras.txt" : "");
-    } else throw new Error("expected transforms.json, images.txt, .gltf/.glb or .chan");
+    } else throw new Error("expected transforms.json, images.txt, .gltf/.glb, .chan, or After Effects keyframes (.txt)");
     pathSetFrames(res, label);
   } catch (e) {
     $("pathInfo").textContent = "Import failed: " + (e?.message ?? e);
@@ -6342,6 +6360,131 @@ function pathSetFrames(res, label) {
   pathRefreshUI();
   setStatus(`Camera track loaded — ${PATH.samples.length} poses from ${label}.`);
 }
+
+/* After Effects keyframe clipboard ("Adobe After Effects N.0 Keyframe Data").
+   Select the camera layer's keyframed properties in AE — Position, and
+   Orientation and/or X/Y/Z Rotation, plus Zoom, plus Point of Interest for a
+   two-node camera — Ctrl/Cmd+C, then paste here. AE copies them as
+   tab-separated text.
+
+   AE world: X right, Y DOWN, Z away from the viewer (right-handed, the same
+   handedness as OpenCV), pixels. An AE camera looks down its local +Z with
+   local +Y down — exactly the OpenCV camera convention, so the pose converts
+   to the internal OpenGL camera with the same CV2GL flip COLMAP uses.
+   Rotation: AE applies X, then Y, then Z about fixed axes (matrix Rz·Ry·Rx,
+   three's Euler order "ZYX"); Orientation and the X/Y/Z Rotation properties
+   compose as Orientation · Rotation. The order is exposed as an option
+   (aeOrder) because it is the one convention here not verified against a
+   live AE install. Zoom is the focal length in comp pixels against the comp
+   WIDTH, so vertical FOV = 2·atan(compHeight / (2·zoom)). */
+function parseAEKeyframes(txt, order = "ZYX") {
+  if (!/Keyframe Data/i.test(txt)) throw new Error("not After Effects keyframe data — copy keyframes in AE (Ctrl/Cmd+C), then paste");
+  const lines = txt.split(/\r?\n/);
+  const meta = {}, props = {};
+  let cur = null;
+  for (const raw of lines) {
+    const cells = raw.split("\t");
+    const line = raw.trim();
+    if (!line) { cur = null; continue; }
+    if (/^End of Keyframe Data/i.test(line)) break;
+    if (/Keyframe Data/i.test(line)) continue;
+    if (cells[0] === "" && cells.length >= 3 && !cur && /[A-Za-z]/.test(cells[1])) {      // "\tUnits Per Second\t30"
+      meta[cells[1].trim()] = parseFloat(cells[2]);
+      continue;
+    }
+    if (cells[0] !== "") {                                   // "Transform\tPosition" / "Camera Options\tZoom"
+      cur = { name: (cells[1] ?? cells[0]).trim(), rows: [] };
+      props[cur.name] = cur;
+      continue;
+    }
+    if (!cur) continue;
+    const nums = cells.slice(1).map((c) => c.trim()).filter((c) => c !== "");
+    if (nums[0] === "Frame" || !nums.length) continue;      // column header
+    const v = nums.map(Number);
+    if (v.every(Number.isFinite)) cur.rows.push(v);
+  }
+  const fps = meta["Units Per Second"] || 30;
+  const W = meta["Source Width"] || 1920, H = meta["Source Height"] || 1080;
+  /* sample a property at a frame: linear between its keys, held outside */
+  const at = (name, f, dims, def) => {
+    const p = props[name];
+    if (!p || !p.rows.length) return def;
+    const r = p.rows;
+    if (f <= r[0][0]) return r[0].slice(1, 1 + dims);
+    if (f >= r[r.length - 1][0]) return r[r.length - 1].slice(1, 1 + dims);
+    let i = 0;
+    while (i < r.length - 2 && r[i + 1][0] <= f) i++;
+    const a = r[i], b = r[i + 1], u = (f - a[0]) / Math.max(b[0] - a[0], 1e-9);
+    return a.slice(1, 1 + dims).map((x, k) => x + (b[1 + k] - x) * u);
+  };
+  const hasPos = props.Position?.rows.length || props["X Position"]?.rows.length;
+  if (!hasPos && !props.Orientation?.rows.length && !props["Y Rotation"]?.rows.length && !props["X Rotation"]?.rows.length)
+    throw new Error("no Position / Orientation / Rotation keyframes found — copy the camera's keyframes, not just the layer");
+  const frames = new Set();
+  for (const p of Object.values(props)) for (const r of p.rows) frames.add(r[0]);
+  const list = [...frames].sort((a, b) => a - b);
+  const d2r = THREE.MathUtils.degToRad;
+  const out = [];
+  for (const f of list) {
+    let pos;
+    if (props.Position?.rows.length) pos = at("Position", f, 3, [W / 2, H / 2, 0]);
+    else pos = ["X", "Y", "Z"].map((ax, k) => at(`${ax} Position`, f, 1, [[W / 2, H / 2, 0][k]])[0]);
+    if (pos.length < 3) pos = [pos[0], pos[1], 0];
+    const o = at("Orientation", f, 3, [0, 0, 0]);
+    const rx = at("X Rotation", f, 1, [0])[0], ry = at("Y Rotation", f, 1, [0])[0];
+    const rz = (props["Z Rotation"] ? at("Z Rotation", f, 1, [0]) : at("Rotation", f, 1, [0]))[0];
+    let q = new THREE.Quaternion();
+    if (props["Point of Interest"]?.rows.length) {
+      /* two-node camera: aim +Z at the point of interest, AE up = -Y */
+      const poi = at("Point of Interest", f, 3, [W / 2, H / 2, 0]);
+      const z = new THREE.Vector3(...poi).sub(new THREE.Vector3(...pos)).normalize();
+      const up = new THREE.Vector3(0, -1, 0);
+      let x = new THREE.Vector3().crossVectors(z, up);         // right-handed, y down: x = y × z  →  with up = -y: x = z × up
+      if (x.lengthSq() < 1e-9) x.set(1, 0, 0);
+      x.normalize();
+      const y = new THREE.Vector3().crossVectors(z, x).normalize();
+      q.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+    }
+    const qo = new THREE.Quaternion().setFromEuler(new THREE.Euler(d2r(o[0]), d2r(o[1]), d2r(o[2]), order));
+    const qr = new THREE.Quaternion().setFromEuler(new THREE.Euler(d2r(rx), d2r(ry), d2r(rz), order));
+    q.multiply(qo).multiply(qr);
+    const m = new THREE.Matrix4().compose(new THREE.Vector3(...pos), q, new THREE.Vector3(1, 1, 1)).multiply(CV2GL);
+    const zoom = at("Zoom", f, 1, [null])[0];
+    const fov = zoom > 0 ? (2 * Math.atan(H / (2 * zoom)) * 180) / Math.PI : null;
+    out.push({ key: f, m, fov });
+  }
+  return { frames: out, seconds: list.length > 1 ? (list[list.length - 1] - list[0]) / fps : null, fps,
+           info: `${list.length} frames @ ${fps} fps · comp ${W}×${H}` };
+}
+
+async function aePasteImport() {
+  let txt = "";
+  try { txt = await navigator.clipboard.readText(); } catch { /* permission refused: fall back to the box */ }
+  if (!/Keyframe Data/i.test(txt)) {
+    $("aeBox").classList.remove("hide");
+    $("aeText").focus();
+    $("pathInfo").textContent = "Paste the After Effects keyframes in the box (Ctrl/Cmd+V), then Import.";
+    return;
+  }
+  aeImportText(txt);
+}
+function aeImportText(txt) {
+  try {
+    const res = parseAEKeyframes(txt, $("aeOrder").value);
+    PATH.fps = res.fps;
+    pathSetFrames(res, "After Effects camera · " + res.info);
+    $("aeBox").classList.add("hide");
+    $("aeText").value = "";
+    PATH.aeText = txt;                     // kept so a change of rotation order can re-parse
+  } catch (e) {
+    $("pathInfo").textContent = "After Effects import: " + (e?.message ?? e);
+    setStatus("After Effects import: " + (e?.message ?? e), true);
+  }
+}
+$("aePaste").onclick = aePasteImport;
+$("aeImport").onclick = () => aeImportText($("aeText").value);
+$("aeCancel").onclick = () => { $("aeBox").classList.add("hide"); $("aeText").value = ""; };
+$("aeOrder").onchange = () => { if (PATH.aeText) aeImportText(PATH.aeText); };
 
 function pathSeconds() {
   if (!PATH.samples) return 0;
@@ -6379,6 +6522,7 @@ function pathWorldFix() {
       return new THREE.Matrix4().set(0, 1, 0, 0, 1, 0, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1);
     case "zup": return new THREE.Matrix4().makeRotationX(-Math.PI / 2);
     case "yup": return new THREE.Matrix4().makeRotationX(Math.PI / 2);
+    case "ydown": return new THREE.Matrix4().makeRotationX(Math.PI);
     default: return new THREE.Matrix4();
   }
 }
@@ -6602,7 +6746,7 @@ function motionApplyPreset(o) {
 
   const p = o.path ?? {};
   if (p.align === "relative" || p.align === "splat") PATH.align = p.align;
-  if (["none", "undoNs", "zup", "yup"].includes(p.world)) PATH.world = p.world;
+  if (["none", "undoNs", "zup", "yup", "ydown"].includes(p.world)) PATH.world = p.world;
   for (const [id, key] of PATH_SLIDERS) if (Number.isFinite(p[key])) PATH[key] = clampNum(p[key], parseFloat($(id).min), parseFloat($(id).max));
   if (typeof p.useFov === "boolean") PATH.useFov = p.useFov;
   if (Number.isFinite(p.auto) && p.auto > 0) PATH.auto = p.auto;
@@ -8606,6 +8750,7 @@ if (DEBUG) {
     get playhead(){ return playhead; },
     get EZ(){ return EZ; }, ezTarget, bezEase, ezCommit, ezDraw, EZ_PRESETS, get keyZone(){ return keyZone; }, set keyZone(v){ keyZone = v; }, keysCopy, keysPaste, keysDelete, keysSelectAll, get laneSel(){ return laneSel; }, get camSel(){ return camSel; }, get KEYCLIP(){ return KEYCLIP; }, get ENV(){ return ENV; },
     get MIDI(){ return MIDI; }, midiHandle, midiSetLearn, midiSetPending, midiParseBle, setKiosk, midiRefreshUI,
+    parseAEKeyframes, aeImportText,
     get VM(){ return VM; }, get PATH(){ return PATH; }, vmAnalyse, vmApply, vmAt, vmProcess, pathSetFrames, pathLoadFiles, pathWorldAt, pathEvaluate, pathBake, parseColmapImages, parseTransformsJson, parseChan,
     get TK(){ return TK; }, tkApply, tkRestore, tkPushSample, tkUpdate, tkTakeAt, tkStart, tkStop, tkOnFace, tkOnOrient,
     /* Every coverage figure in NOTES was measured against "void". Both probe
