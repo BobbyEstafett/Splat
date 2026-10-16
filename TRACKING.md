@@ -151,6 +151,54 @@ Orbit. Position, orientation (roulis compris) et focale sont rejouées.
 Le head tracking et le mouvement 2D s'ajoutent par-dessus le mode Path.
 Ordre d'application : orientation exacte du Path, puis mouvement 2D, puis tête.
 
+## Copier / coller des keyframes
+
+**Paramètres (la lane du bas).**
+- Sélection : clic sur un key pour le sélectionner, `Shift`-clic pour en
+  ajouter ou en retirer, `Shift`-glisser dans le vide pour une sélection au
+  rectangle, `Ctrl/Cmd+A` pour tout sélectionner. Glisser un key sélectionné
+  déplace toute la sélection.
+- `Ctrl/Cmd+C` copie la sélection (ou tous les keys du paramètre si rien n'est
+  sélectionné), `Ctrl/Cmd+X` coupe, `Suppr` efface.
+- `Ctrl/Cmd+V` colle **à la tête de lecture**, sur le paramètre affiché dans la
+  lane. On peut coller sur un *autre* paramètre : la forme est conservée et
+  remise à l'échelle de sa plage (par exemple copier une courbe de Noise sur la
+  Saturation).
+- Les mêmes actions existent en boutons dans la lane : **Copy** / **Paste**.
+
+**Caméra (la rangée de ticks au-dessus de la lane, en mode Keyframes).**
+- `Shift`-clic sur un tick pour le sélectionner, puis copier / coller au
+  clavier après avoir cliqué dans la rangée, ou avec les boutons **Copy keys** /
+  **Paste keys** de la section Camera.
+- Coller place les keys à la tête de lecture ; les keys qui dépasseraient la
+  fin de la timeline sont ignorés.
+
+Le presse-papier survit à un rechargement et passe d'un onglet à l'autre : on
+peut copier un mouvement d'un preset et le coller dans un autre.
+
+## Courbe de vitesse (section Camera)
+
+L'éditeur **Speed curve** règle le *rythme* du mouvement caméra sur la timeline
+(Keyframes, Orbit et Path), sans déplacer les keys.
+
+- La hauteur de la courbe correspond à la vitesse. La ligne pointillée est la
+  vitesse moyenne.
+- Monter un point accélère la caméra à cet endroit. Comme la durée totale ne
+  change pas, le reste ralentit en compensation.
+- Une vitesse à zéro produit une **pause** : la caméra s'arrête, puis repart.
+- Double-clic pour ajouter un point, `Alt`-clic pour en retirer un. Les points
+  de début et de fin se déplacent seulement en hauteur.
+- **Shape…** propose des formes de départ : constante, ease in/out,
+  accélération, décélération, lent au milieu, pause, accélération brève.
+- Les petits traits en bas indiquent où la tête de lecture atteint chaque key
+  caméra. La courbe violette montre la progression du mouvement.
+- *Also apply to parameter keyframes* : le même rythme s'applique aussi aux
+  animations des paramètres (l'audio-réactif n'est pas touché).
+- Avec une courbe de vitesse, mettre **Ease** à 0 évite que les deux lissages
+  s'additionnent.
+
+La courbe est enregistrée dans le preset et s'applique à l'export.
+
 ## Plein écran sans interface (Kiosk)
 
 La touche **`K`** (ou le bouton **Kiosk** de la section Tracking) passe en

@@ -137,6 +137,8 @@
     border:1px solid var(--chassis); touch-action:none;
   }
   .camtick.onkey{background:var(--live)}
+  .camtick.sel{background:var(--signal); box-shadow:0 0 0 2px var(--ink)}
+  #spdCanvas{width:100%; height:120px; display:block; background:var(--void); border:1px solid var(--rule); margin:0 0 6px; touch-action:none; cursor:crosshair}
   #laneWrap{position:relative; flex:1; min-height:0}
   #laneCanvas{width:100%; height:100%; cursor:crosshair; touch-action:none}
   #laneHint{
@@ -518,6 +520,8 @@
     <button id="envOn" title="Arm or disarm this envelope">Off</button>
     <button id="envMode" title="Interpolation between keys">Smooth</button>
     <button id="envClear" title="Delete every key on this parameter">Clear</button>
+    <button id="keyCopy" title="Copy the selected keys — all keys if none is selected (Ctrl/Cmd+C)">Copy</button>
+    <button id="keyPaste" title="Paste at the playhead — onto this parameter, or onto another one (values follow its range) (Ctrl/Cmd+V)">Paste</button>
     <span class="lsep"></span>
     <label class="audlbl">Audio</label>
     <select id="audBand" title="Frequency band driving the focused parameter">
@@ -628,6 +632,8 @@
       <button id="camAddKey" title="Add a camera keyframe at the current playhead">Add key</button>
       <button id="camRemoveKey" title="Remove the camera keyframe at the current playhead">Remove key</button>
       <button id="camSmooth" title="Path shape between keyframes" class="on">Smooth</button>
+      <button id="camCopy" title="Copy the selected camera keys (shift-click ticks to select) — all if none (Ctrl/Cmd+C after clicking the key row)">Copy keys</button>
+      <button id="camPaste" title="Paste camera keys at the playhead (Ctrl/Cmd+V)">Paste keys</button>
     </div>
     <p style="color:var(--ink-dim); margin:8px 0" id="camKeyCount">
       <span id="camKeyCountText">No camera keyframes — camera stays under manual orbit control.</span>
@@ -660,6 +666,30 @@
         keyframe.
       </p>
     </div>
+
+    <div class="sub">Speed curve</div>
+    <label class="check"><input type="checkbox" id="spdOn"> Use the speed curve</label>
+    <canvas id="spdCanvas" width="600" height="240" title="Drag points up = faster there. Double-click to add a point, alt-click to remove one. The total length of the move does not change."></canvas>
+    <p id="spdInfo" style="color:var(--ink-dim); margin:0 0 8px">Off — the camera moves at the pace of its keys.</p>
+    <div class="btns" style="margin-bottom:8px">
+      <select id="spdPreset" title="Start from a shape">
+        <option value="">Shape…</option>
+        <option value="linear">Constant</option>
+        <option value="inout">Ease in + out</option>
+        <option value="in">Ease in (accelerate)</option>
+        <option value="out">Ease out (decelerate)</option>
+        <option value="slowmid">Slow in the middle</option>
+        <option value="hold">Pause in the middle</option>
+        <option value="pulse">Rush in the middle</option>
+      </select>
+      <button id="spdReset" title="Constant speed">Reset</button>
+    </div>
+    <label class="check"><input type="checkbox" id="spdParams"> Also apply to parameter keyframes</label>
+    <p style="color:var(--ink-dim); margin:4px 0 0">
+      Shapes the camera's pace over the timeline (Keyframes, Orbit and Path) without
+      moving its keys. Height = speed, the dashed line is the average. With a speed curve,
+      set <b>Ease</b> to 0 so the two do not stack.
+    </p>
   </details>
 
   <!-- OVVO fork — head / gyro tracked "window" camera. Plain routing state,
@@ -3031,6 +3061,72 @@ const KEY_EPS = 1e-3;               // playhead tolerance for "a key is here"
 const smooth01 = (x) => x * x * (3 - 2 * x);
 const clampNum = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
+/* OVVO fork — camera SPEED curve. A time remap u = W(t) applied to the
+   camera's own clock (keyframes, orbit, path), built from an editable speed
+   profile s(t) >= 0: W(t) = ∫0..t s / ∫0..1 s, so the move always starts at
+   its first key and ends on its last within the same Duration — speeding
+   one stretch up necessarily slows the rest down. Monotone by construction
+   (speed is never negative), so the camera never runs backwards. Declared up
+   here, ahead of setCamMode()'s boot-time driveCamera(), which already reads
+   it through evaluateCamera(). */
+const SPD = { on: false, params: false, pts: [{ t: 0, s: 1 }, { t: 1, s: 1 }], lut: null };
+const SPD_N = 1024;
+function spdSpeedAt(t) {
+  /* Monotone cubic (Fritsch–Carlson) through the points: no overshoot, so a
+     speed set to 0 stays at 0 instead of dipping negative. */
+  const p = SPD.pts, n = p.length;
+  if (n === 1) return p[0].s;
+  if (t <= p[0].t) return p[0].s;
+  if (t >= p[n - 1].t) return p[n - 1].s;
+  let i = 0;
+  while (i < n - 2 && p[i + 1].t <= t) i++;
+  const d = [], m = [];
+  for (let k = 0; k < n - 1; k++) d.push((p[k + 1].s - p[k].s) / Math.max(p[k + 1].t - p[k].t, 1e-9));
+  m.push(d[0]);
+  for (let k = 1; k < n - 1; k++) m.push(d[k - 1] * d[k] <= 0 ? 0 : (d[k - 1] + d[k]) / 2);
+  m.push(d[n - 2]);
+  for (let k = 0; k < n - 1; k++) {
+    if (d[k] === 0) { m[k] = 0; m[k + 1] = 0; continue; }
+    const a = m[k] / d[k], b = m[k + 1] / d[k], h = a * a + b * b;
+    if (h > 9) { const tau = 3 / Math.sqrt(h); m[k] = tau * a * d[k]; m[k + 1] = tau * b * d[k]; }
+  }
+  const h = p[i + 1].t - p[i].t, u = (t - p[i].t) / Math.max(h, 1e-9);
+  const h00 = 2 * u ** 3 - 3 * u ** 2 + 1, h10 = u ** 3 - 2 * u ** 2 + u, h01 = -2 * u ** 3 + 3 * u ** 2, h11 = u ** 3 - u ** 2;
+  return Math.max(0, h00 * p[i].s + h10 * h * m[i] + h01 * p[i + 1].s + h11 * h * m[i + 1]);
+}
+function spdBuild() {
+  const lut = new Float32Array(SPD_N + 1);
+  let acc = 0, prev = spdSpeedAt(0);
+  for (let i = 1; i <= SPD_N; i++) {
+    const cur = spdSpeedAt(i / SPD_N);
+    acc += (prev + cur) * 0.5 / SPD_N;
+    lut[i] = acc;
+    prev = cur;
+  }
+  if (acc < 1e-9) { for (let i = 0; i <= SPD_N; i++) lut[i] = i / SPD_N; }   // all-zero speed: fall back to linear
+  else for (let i = 0; i <= SPD_N; i++) lut[i] /= acc;
+  SPD.lut = lut;
+}
+spdBuild();
+function camWarp(t) {
+  if (!SPD.on) return t;
+  const x = Math.min(Math.max(t, 0), 1) * SPD_N, i = Math.floor(x), j = Math.min(i + 1, SPD_N);
+  return SPD.lut[i] + (SPD.lut[j] - SPD.lut[i]) * (x - i);
+}
+/* Inverse: the playhead at which the camera reaches authored time u. Flat
+   stretches (speed 0) have many answers; the first one is returned. */
+function camUnwarp(u) {
+  if (!SPD.on) return u;
+  const L = SPD.lut;
+  let lo = 0, hi = SPD_N;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (L[mid] < u) lo = mid; else hi = mid; }
+  const a = L[lo], b = L[hi];
+  return (lo + (b > a ? clampNum((u - a) / (b - a), 0, 1) : 0)) / SPD_N;
+}
+/* The clock parameter envelopes are sampled on — warped only if asked. */
+const animT = () => (SPD.on && SPD.params ? camWarp(playhead) : playhead);
+
+
 function envValue(id, t) {
   const k = ENV[id].keys;
   if (k.length === 1) return k[0].v;
@@ -3279,7 +3375,7 @@ function evalParams() {
   for (const band of Object.keys(BANDS)) audioLevel[band] = audioAt(band, seconds);
 
   for (const [id] of SPEC) {
-    let v = hasEnv(id) ? envValue(id, playhead) : P[id];
+    let v = hasEnv(id) ? envValue(id, animT()) : P[id];
 
     /* Audio is a modulation ON TOP of the base value, not a replacement, so
        it layers with envelopes instead of fighting them: an envelope sets
@@ -3314,7 +3410,7 @@ for (const [id, digits] of SPEC) {          // pass 2: listeners
     markDirty(id);
     /* Auto-key: an armed envelope owns its parameter, so a drag has to write
        into the curve or it would appear to do nothing. */
-    if (ENV[id]?.on) setKey(id, playhead, P[id]);
+    if (ENV[id]?.on) setKey(id, animT(), P[id]);
     refreshGroups();
     pushUniforms();
   });
@@ -3345,8 +3441,8 @@ for (const [id, digits] of SPEC) {
     kb.setAttribute("aria-label", `Keyframe ${id} at playhead`);
     kb.addEventListener("click", (ev) => {
       focusParam(id);
-      if (ev.altKey) removeKey(id, playhead);
-      else setKey(id, playhead, V[id]);
+      if (ev.altKey) removeKey(id, animT());
+      else setKey(id, animT(), V[id]);
     });
   }
   el.parentElement.insertBefore(kb, $("o-" + id));
@@ -3413,6 +3509,9 @@ stage.addEventListener("pointerdown", () => {
  * ------------------------------------------------------------------ */
 let focused = null;
 let drag = null;
+const laneSel = new Set();            // OVVO fork — selected envelope keys of the focused parameter
+let laneBox = null;                   // marquee while shift-dragging the lane
+let keyZone = "lane";                 // which key strip Copy/Paste talks to: "lane" | "cam"
 let camKeyDrag = null;   // {key, el, startX, startT, lo, hi, w, moved} while dragging a camera-key tick
 
 function setKey(id, t, v) {
@@ -3442,7 +3541,7 @@ function refreshKeyBtn(id) {
   const audible = !!(a && a.band && a.depth);
   btn.classList.toggle("armed", hasEnv(id) || audible);
   btn.classList.toggle("aud", audible);
-  btn.classList.toggle("onkey", !!e?.keys.some((k) => Math.abs(k.t - playhead) < KEY_EPS));
+  btn.classList.toggle("onkey", !!e?.keys.some((k) => Math.abs(k.t - animT()) < KEY_EPS));
   const bits = [];
   if (n) bits.push(`${n} key${n === 1 ? "" : "s"}`);
   if (audible) bits.push(`audio ${a.band} ${a.depth > 0 ? "+" : ""}${a.depth.toFixed(2)}`);
@@ -3526,6 +3625,7 @@ function refreshEnv(id) {
 }
 
 function focusParam(id) {
+  if (focused !== id) laneSel.clear();
   focused = id;
   for (const b of document.querySelectorAll(".key.focused")) b.classList.remove("focused");
   $("p-" + id).parentElement.querySelector(".key")?.classList.add("focused");
@@ -3569,6 +3669,7 @@ function setPlayhead(t) {
   drawLane();
   drawCamRow();
   drawSparkline();
+  if (spdReady) spdDraw();   // OVVO fork — speed editor playhead (flag, not a const check: setPlayhead may run before the editor exists)
 }
 
 function laneHead() {
@@ -3693,7 +3794,7 @@ function drawLane() {
 
   const live = CSSVAR("--live", "#ff5a3c");
   lctx.strokeStyle = live; lctx.globalAlpha = 0.5;
-  lctx.beginPath(); lctx.moveTo(g.x(playhead), 0); lctx.lineTo(g.x(playhead), g.h); lctx.stroke();
+  lctx.beginPath(); lctx.moveTo(g.x(animT()), 0); lctx.lineTo(g.x(animT()), g.h); lctx.stroke();
   lctx.globalAlpha = 1;
 
   if (!focused) return;
@@ -3711,16 +3812,27 @@ function drawLane() {
   }
   lctx.stroke();
 
+  const edit = CSSVAR("--edit", "#b48ce8");
   for (const k of e.keys) {
-    const X = g.x(k.t), Y = g.y(k.v), r = 4 * g.s;
-    lctx.fillStyle = Math.abs(k.t - playhead) < KEY_EPS ? live : tone;
+    const X = g.x(k.t), Y = g.y(k.v), sel = laneSel.has(k), r = (sel ? 5.5 : 4) * g.s;
+    lctx.fillStyle = sel ? edit : Math.abs(k.t - animT()) < KEY_EPS ? live : tone;
     lctx.beginPath();
     lctx.moveTo(X, Y - r); lctx.lineTo(X + r, Y); lctx.lineTo(X, Y + r); lctx.lineTo(X - r, Y);
     lctx.closePath(); lctx.fill();
   }
+  if (laneBox) {                                           // marquee
+    lctx.strokeStyle = edit; lctx.lineWidth = g.s; lctx.setLineDash([4 * g.s, 3 * g.s]);
+    lctx.strokeRect(Math.min(laneBox.x0, laneBox.x1), Math.min(laneBox.y0, laneBox.y1), Math.abs(laneBox.x1 - laneBox.x0), Math.abs(laneBox.y1 - laneBox.y0));
+    lctx.setLineDash([]);
+  }
 }
 
+/* OVVO fork — selection. Click a key to select it, Shift-click to add or
+   remove, Shift-drag on empty lane for a marquee; dragging any selected key
+   moves the whole selection together. Selected keys are what Copy / Cut /
+   Delete act on (Copy with nothing selected takes every key). */
 laneCv.addEventListener("pointerdown", (ev) => {
+  keyZone = "lane";
   if (!focused) return;
   const r = laneCv.getBoundingClientRect();
   const cx = ev.clientX - r.left, cy = ev.clientY - r.top;
@@ -3730,29 +3842,52 @@ laneCv.addEventListener("pointerdown", (ev) => {
   if (hit) {
     if (ev.altKey) {
       e.keys.splice(e.keys.indexOf(hit), 1);
+      laneSel.delete(hit);
       if (!e.keys.length) e.on = false;
       refreshEnv(focused);
       return;
     }
-    // hold the key object, not its index — the array is re-sorted while dragging
-    drag = hit;
+    if (ev.shiftKey) { laneSel.has(hit) ? laneSel.delete(hit) : laneSel.add(hit); drawLane(); return; }
+    if (!laneSel.has(hit)) { laneSel.clear(); laneSel.add(hit); }
+    // hold the key objects, not indices — the array is re-sorted while dragging
+    drag = { anchor: hit, x0: cx, y0: cy, start: [...laneSel].map((k) => ({ k, t: k.t, v: k.v })) };
+    laneCv.setPointerCapture(ev.pointerId);
+    drawLane();
+    return;
+  }
+  if (ev.shiftKey) {
+    laneBox = { x0: cx * g.s, y0: cy * g.s, x1: cx * g.s, y1: cy * g.s };
     laneCv.setPointerCapture(ev.pointerId);
     return;
   }
-  setPlayhead(g.tAt(cx));
+  laneSel.clear();
+  setPlayhead(SPD.on && SPD.params ? camUnwarp(g.tAt(cx)) : g.tAt(cx));
 });
 
 laneCv.addEventListener("pointermove", (ev) => {
-  if (!drag || !focused) return;
+  if (!focused) return;
   const r = laneCv.getBoundingClientRect();
   const g = laneGeom(), e = envOf(focused);
-  drag.t = g.tAt(ev.clientX - r.left);
-  drag.v = g.vAt(ev.clientY - r.top);
+  const cx = ev.clientX - r.left, cy = ev.clientY - r.top;
+  if (laneBox) {
+    laneBox.x1 = cx * g.s; laneBox.y1 = cy * g.s;
+    const [xa, xb] = [laneBox.x0, laneBox.x1].sort((a, b) => a - b), [ya, yb] = [laneBox.y0, laneBox.y1].sort((a, b) => a - b);
+    laneSel.clear();
+    for (const k of e.keys) { const X = g.x(k.t), Y = g.y(k.v); if (X >= xa && X <= xb && Y >= ya && Y <= yb) laneSel.add(k); }
+    drawLane();
+    return;
+  }
+  if (!drag) return;
+  const dt = g.tAt(cx) - g.tAt(drag.x0), dv = g.vAt(cy) - g.vAt(drag.y0);
+  for (const s of drag.start) {
+    s.k.t = clampNum(s.t + dt, 0, 1);
+    s.k.v = clampNum(s.v + dv, g.lo, g.hi);
+  }
   e.keys.sort((a, b) => a.t - b.t);
   refreshEnv(focused);
 });
 
-const endDrag = () => { drag = null; };
+const endDrag = () => { drag = null; if (laneBox) { laneBox = null; drawLane(); } };
 laneCv.addEventListener("pointerup", endDrag);
 laneCv.addEventListener("pointercancel", endDrag);
 
@@ -4454,6 +4589,7 @@ addEventListener("drop", async (e) => {
  * costs nothing to carry now.
  * ------------------------------------------------------------------ */
 let CAMKEYS = [];
+const camSel = new Set();             // OVVO fork — selected camera keys (shift-click ticks)
 let camSmooth = true;                 // path shape: curved vs straight segments
 let camPosCurve = null, camTgtCurve = null;   // THREE.CatmullRomCurve3, rebuilt on any mutation
 
@@ -4468,8 +4604,8 @@ function rebuildCamCurves() {
 const camKeyIndexAt = (t) => CAMKEYS.findIndex((k) => Math.abs(k.t - t) < KEY_EPS);
 
 function addCamKey() {
-  const rec = { t: playhead, pos: camera.position.toArray(), tgt: controls.target.toArray(), fov: camera.fov };
-  const i = camKeyIndexAt(playhead);
+  const rec = { t: camWarp(playhead), pos: camera.position.toArray(), tgt: controls.target.toArray(), fov: camera.fov };
+  const i = camKeyIndexAt(camWarp(playhead));
   if (i >= 0) CAMKEYS[i] = rec; else CAMKEYS.push(rec);
   CAMKEYS.sort((a, b) => a.t - b.t);
   rebuildCamCurves();
@@ -4477,7 +4613,7 @@ function addCamKey() {
   setStatus(`Camera key ${i >= 0 ? "replaced" : "added"} at t=${playhead.toFixed(2)} — ${CAMKEYS.length} total.`);
 }
 function removeCamKeyAtPlayhead() {
-  const i = camKeyIndexAt(playhead);
+  const i = camKeyIndexAt(camWarp(playhead));
   if (i < 0) { setStatus("No camera key at the playhead — scrub to one, or Add key instead.", true); return; }
   CAMKEYS.splice(i, 1);
   rebuildCamCurves();
@@ -4560,6 +4696,7 @@ function sampleOrbit(t) {
    can both call the same evaluation without side effects piling up. */
 function evaluateCamera(t) {
   if (camMode === "manual") return null;
+  t = camWarp(t);                                          // OVVO fork — speed curve
   if (camMode === "keyframes") return CAMKEYS.length === 0 ? null : sampleCam(t);
   if (camMode === "path") return pathEvaluate(t);       // OVVO fork — imported 3D track
   return sampleOrbit(t);
@@ -5039,25 +5176,30 @@ function drawCamRow() {
   const w = row.clientWidth || 1;
   for (const k of CAMKEYS) {
     const el = document.createElement("div");
-    el.className = "camtick" + (Math.abs(k.t - playhead) < KEY_EPS ? " onkey" : "");
-    el.style.left = (k.t * w) + "px";
-    el.title = `t=${k.t.toFixed(2)} — drag to retime, click to jump, alt-click to delete`;
+    /* OVVO fork: ticks sit where the PLAYHEAD reaches each key, which is
+       not k.t once the speed curve is on — camUnwarp() maps it back. */
+    el.className = "camtick" + (Math.abs(k.t - camWarp(playhead)) < KEY_EPS ? " onkey" : "") + (camSel.has(k) ? " sel" : "");
+    el.style.left = (camUnwarp(k.t) * w) + "px";
+    el.title = `t=${k.t.toFixed(2)} — drag to retime, click to jump, shift-click to select, alt-click to delete`;
     el.addEventListener("pointerdown", (ev) => {
-      if (ev.altKey) return;                  // let the click handler's delete fire instead
+      keyZone = "cam";
+      if (ev.altKey || ev.shiftKey) return;   // let the click handler's delete / select fire instead
       const i = CAMKEYS.indexOf(k);
       const lo = i > 0 ? CAMKEYS[i - 1].t + KEY_EPS : 0;
       const hi = i < CAMKEYS.length - 1 ? CAMKEYS[i + 1].t - KEY_EPS : 1;
-      camKeyDrag = { key: k, el, startX: ev.clientX, startT: k.t, lo, hi, w: row.clientWidth || 1, moved: false };
+      camKeyDrag = { key: k, el, startX: ev.clientX, startT: camUnwarp(k.t), lo, hi, w: row.clientWidth || 1, moved: false };
       el.setPointerCapture(ev.pointerId);
     });
     el.addEventListener("click", (ev) => {
       if (camKeyDrag === "just-dropped") { camKeyDrag = null; return; }   // suppress the click a drag-release produces
       if (ev.altKey) {
         const i = CAMKEYS.indexOf(k);
-        if (i >= 0) { CAMKEYS.splice(i, 1); rebuildCamCurves(); refreshCamUI(); setStatus(`Camera key removed — ${CAMKEYS.length} left.`); }
+        if (i >= 0) { CAMKEYS.splice(i, 1); camSel.delete(k); rebuildCamCurves(); refreshCamUI(); setStatus(`Camera key removed — ${CAMKEYS.length} left.`); }
         return;
       }
-      setPlayhead(k.t);   // drives the camera via evaluateCamera(k.t), which reproduces this exact key — ticks only show in Keyframes mode
+      if (ev.shiftKey) { camSel.has(k) ? camSel.delete(k) : camSel.add(k); drawCamRow(); return; }
+      camSel.clear();
+      setPlayhead(camUnwarp(k.t));   // drives the camera via evaluateCamera(), which reproduces this exact key — ticks only show in Keyframes mode
     });
     row.appendChild(el);
   }
@@ -5080,9 +5222,9 @@ addEventListener("pointermove", (ev) => {
   const dx = ev.clientX - camKeyDrag.startX;
   if (Math.abs(dx) > 3) camKeyDrag.moved = true;
   if (!camKeyDrag.moved) return;
-  const t = clamp(camKeyDrag.startT + dx / Math.max(camKeyDrag.w, 1), camKeyDrag.lo, camKeyDrag.hi);
+  const t = clamp(camWarp(clamp(camKeyDrag.startT + dx / Math.max(camKeyDrag.w, 1), 0, 1)), camKeyDrag.lo, camKeyDrag.hi);
   camKeyDrag.key.t = t;
-  camKeyDrag.el.style.left = (t * camKeyDrag.w) + "px";
+  camKeyDrag.el.style.left = (camUnwarp(t) * camKeyDrag.w) + "px";
   camKeyDrag.el.title = `t=${t.toFixed(2)} — drag to retime, click to jump, alt-click to delete`;
 });
 for (const ev of ["pointerup", "pointercancel"]) {
@@ -6293,7 +6435,7 @@ function pathEvaluate(tn) {
    been orbited off the track, so manual exploration while paused still works. */
 function pathOrientApply(tn) {
   if (camMode !== "path" || !PATH.samples || correcting || pickOn) return false;
-  const w = pathWorldAt(tn);
+  const w = pathWorldAt(camWarp(tn));
   if (!w || camera.position.distanceTo(w.pos) > Math.max(radius * 0.002, 1e-4)) return false;
   camSave();
   camera.quaternion.copy(w.quat);
@@ -6823,6 +6965,293 @@ addEventListener("pointermove", () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * Keyframe clipboard (OVVO fork)
+ *
+ * Two kinds, one clipboard: parameter-envelope keys (from the lane) and
+ * camera keys (from the camera row). Times are stored relative to the first
+ * copied key and pasted at the playhead; envelope values are stored as a
+ * fraction of the source slider's range, so keys copied from one parameter
+ * paste onto another with the same SHAPE, mapped onto its own range. Kept
+ * in localStorage too, so a copy survives a reload and reaches another tab.
+ * ------------------------------------------------------------------ */
+const CLIP_KEY = "gausseous.clipboard.v1";
+let KEYCLIP = null;
+try { KEYCLIP = JSON.parse(localStorage.getItem(CLIP_KEY) || "null"); } catch { /* ignore */ }
+
+function clipSet(c) {
+  KEYCLIP = c;
+  try { localStorage.setItem(CLIP_KEY, JSON.stringify(c)); } catch { /* private mode */ }
+}
+const laneSelected = () => {
+  if (!focused) return [];
+  const keys = envOf(focused).keys;
+  const sel = keys.filter((k) => laneSel.has(k));
+  return sel.length ? sel : keys.slice();
+};
+const camSelected = () => {
+  const sel = CAMKEYS.filter((k) => camSel.has(k));
+  return sel.length ? sel : CAMKEYS.slice();
+};
+
+function keysCopy(zone = keyZone) {
+  if (zone === "cam") {
+    const ks = camSelected();
+    if (!ks.length) { setStatus("No camera keys to copy.", true); return false; }
+    const t0 = Math.min(...ks.map((k) => k.t));
+    clipSet({ kind: "cam", keys: ks.map((k) => ({ dt: k.t - t0, pos: [...k.pos], tgt: [...k.tgt], fov: k.fov })) });
+    setStatus(`Copied ${ks.length} camera key${ks.length === 1 ? "" : "s"} — Paste puts them at the playhead.`);
+    return true;
+  }
+  if (!focused) { setStatus("Focus a parameter first (click its name), then copy its keys.", true); return false; }
+  const ks = laneSelected();
+  if (!ks.length) { setStatus(`${focused} has no keys to copy.`, true); return false; }
+  const el = $("p-" + focused), lo = parseFloat(el.min), hi = parseFloat(el.max);
+  const t0 = Math.min(...ks.map((k) => k.t));
+  clipSet({ kind: "param", src: focused, smooth: envOf(focused).smooth,
+            keys: ks.map((k) => ({ dt: k.t - t0, u: (k.v - lo) / Math.max(hi - lo, 1e-9), v: k.v })) });
+  setStatus(`Copied ${ks.length} key${ks.length === 1 ? "" : "s"} from ${focused}.`);
+  return true;
+}
+
+function keysPaste() {
+  const c = KEYCLIP;
+  if (!c?.keys?.length) { setStatus("Clipboard is empty — copy some keys first.", true); return; }
+  if (c.kind === "cam") {
+    const T0 = camWarp(playhead);
+    camSel.clear();
+    let n = 0;
+    for (const k of c.keys) {
+      const t = T0 + k.dt;
+      if (t > 1 + 1e-6) continue;
+      const rec = { t: Math.min(t, 1), pos: [...k.pos], tgt: [...k.tgt], fov: k.fov ?? camera.fov };
+      const i = camKeyIndexAt(rec.t);
+      if (i >= 0) CAMKEYS[i] = rec; else CAMKEYS.push(rec);
+      camSel.add(rec); n++;
+    }
+    CAMKEYS.sort((a, b) => a.t - b.t);
+    rebuildCamCurves();
+    refreshCamUI();
+    if (camMode !== "keyframes") setCamMode("keyframes"); else driveCamera();
+    setStatus(`Pasted ${n} camera key${n === 1 ? "" : "s"} at t=${T0.toFixed(2)}${n < c.keys.length ? ` (${c.keys.length - n} past the end dropped)` : ""}.`);
+    return;
+  }
+  if (!focused) { setStatus("Focus the parameter to paste onto (click its name).", true); return; }
+  if (NO_ANIM.has(focused)) { setStatus(`${focused} cannot be animated.`, true); return; }
+  const el = $("p-" + focused), lo = parseFloat(el.min), hi = parseFloat(el.max);
+  const same = c.src === focused, e = envOf(focused), T0 = animT();
+  laneSel.clear();
+  let n = 0;
+  for (const k of c.keys) {
+    const t = T0 + k.dt;
+    if (t > 1 + 1e-6) continue;
+    const v = clampNum(same && Number.isFinite(k.v) ? k.v : lo + k.u * (hi - lo), lo, hi);
+    const tt = Math.min(t, 1);
+    const i = e.keys.findIndex((q) => Math.abs(q.t - tt) < KEY_EPS);
+    let rec;
+    if (i >= 0) { e.keys[i].v = v; rec = e.keys[i]; } else { rec = { t: tt, v }; e.keys.push(rec); }
+    laneSel.add(rec); n++;
+  }
+  e.keys.sort((a, b) => a.t - b.t);
+  if (e.keys.length) e.on = true;
+  refreshEnv(focused);
+  setStatus(`Pasted ${n} key${n === 1 ? "" : "s"} onto ${focused}${same ? "" : ` (shape from ${c.src}, mapped to this range)`}.`);
+}
+
+function keysDelete(zone = keyZone) {
+  if (zone === "cam") {
+    if (!camSel.size) return;
+    const n = camSel.size;
+    CAMKEYS = CAMKEYS.filter((k) => !camSel.has(k));
+    camSel.clear(); rebuildCamCurves(); refreshCamUI(); driveCamera();
+    setStatus(`Deleted ${n} camera key${n === 1 ? "" : "s"}.`);
+    return;
+  }
+  if (!focused || !laneSel.size) return;
+  const e = envOf(focused), n = laneSel.size;
+  e.keys = e.keys.filter((k) => !laneSel.has(k));
+  laneSel.clear();
+  if (!e.keys.length) e.on = false;
+  refreshEnv(focused);
+  syncSliders();
+  setStatus(`Deleted ${n} key${n === 1 ? "" : "s"}.`);
+}
+
+function keysSelectAll(zone = keyZone) {
+  if (zone === "cam") { for (const k of CAMKEYS) camSel.add(k); drawCamRow(); return; }
+  if (!focused) return;
+  for (const k of envOf(focused).keys) laneSel.add(k);
+  drawLane();
+}
+
+$("keyCopy").onclick = () => { keyZone = "lane"; keysCopy("lane"); };
+$("keyPaste").onclick = () => { if (KEYCLIP?.kind === "cam") { setStatus("The clipboard holds camera keys — use Paste keys in Camera.", true); return; } keysPaste(); };
+$("camCopy").onclick = () => { keyZone = "cam"; keysCopy("cam"); };
+$("camPaste").onclick = () => { if (KEYCLIP && KEYCLIP.kind !== "cam") { setStatus("The clipboard holds parameter keys — use Paste in the lane.", true); return; } keysPaste(); };
+$("camRow").addEventListener("pointerdown", () => { keyZone = "cam"; });
+
+addEventListener("keydown", (e) => {
+  if (isEditableTarget(document.activeElement)) return;
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && !e.altKey) {
+    if (e.code === "KeyC") { if (keysCopy()) e.preventDefault(); }
+    else if (e.code === "KeyX") { if (keysCopy()) { keysDelete(); e.preventDefault(); } }
+    else if (e.code === "KeyV") { e.preventDefault(); keysPaste(); }
+    else if (e.code === "KeyA") { e.preventDefault(); keysSelectAll(); }
+    return;
+  }
+  if ((e.code === "Delete" || e.code === "Backspace") && !e.altKey) {
+    if ((keyZone === "cam" && camSel.size) || (keyZone === "lane" && laneSel.size)) { e.preventDefault(); keysDelete(); }
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * Speed curve editor (OVVO fork) — the core (SPD, camWarp) lives up top.
+ * ------------------------------------------------------------------ */
+var spdReady = false;                 // var on purpose: hoisted, readable from setPlayhead() at any point of boot
+const spdCv = $("spdCanvas"), spdG = spdCv.getContext("2d");
+let spdDrag = null;
+const SPD_PAD = 14;
+
+function spdNormalise() {
+  /* Mean speed 1, so the curve reads as "× average" — done on release, not
+     during the drag, so the point stays under the pointer while it moves. */
+  let acc = 0;
+  for (let i = 0; i <= 256; i++) acc += spdSpeedAt(i / 256) / 257;
+  if (acc > 1e-6) for (const p of SPD.pts) p.s /= acc;
+}
+function spdChanged(final) {
+  if (final) spdNormalise();
+  spdBuild();
+  spdDraw();
+  if (SPD.on) { driveCamera(); pushUniforms(); syncSliders(); drawCamRow(); drawLane(); }
+}
+const spdMax = () => Math.max(2.5, ...SPD.pts.map((p) => p.s * 1.15));
+function spdGeom() {
+  const W = spdCv.width, H = spdCv.height, s = W / Math.max(spdCv.clientWidth, 1), pad = SPD_PAD * s, m = spdMax();
+  return {
+    W, H, s, pad, m,
+    x: (t) => pad + t * (W - 2 * pad),
+    y: (v) => H - pad - (v / m) * (H - 2 * pad),
+    tAt: (cx) => clampNum((cx * s - pad) / (W - 2 * pad), 0, 1),
+    vAt: (cy) => clampNum(((H - pad - cy * s) / (H - 2 * pad)) * m, 0, 50),
+  };
+}
+function spdDraw() {
+  const g = spdGeom(), c = spdG;
+  c.clearRect(0, 0, g.W, g.H);
+  const css = (n, f) => CSSVAR(n, f);
+  c.lineWidth = g.s;
+  c.strokeStyle = css("--rule", "#1e222a");
+  for (let i = 0; i <= 4; i++) { const x = g.x(i / 4); c.beginPath(); c.moveTo(x, 0); c.lineTo(x, g.H); c.stroke(); }
+  c.setLineDash([4 * g.s, 4 * g.s]); c.strokeStyle = css("--ink-dim", "#737b86");
+  c.beginPath(); c.moveTo(g.x(0), g.y(1)); c.lineTo(g.x(1), g.y(1)); c.stroke(); c.setLineDash([]);
+  /* camera keys, where the playhead reaches them */
+  c.fillStyle = css("--signal", "#9fe0d4");
+  for (const k of CAMKEYS) c.fillRect(g.x(camUnwarp(k.t)) - g.s, g.H - g.pad + 2 * g.s, 2 * g.s, g.pad - 4 * g.s);
+  /* position curve W(t), faint, scaled to the full height */
+  c.strokeStyle = css("--edit", "#b48ce8"); c.globalAlpha = 0.35; c.beginPath();
+  for (let i = 0; i <= 100; i++) {
+    const t = i / 100, X = g.x(t), Y = g.H - g.pad - (SPD.lut[Math.round(t * SPD_N)]) * (g.H - 2 * g.pad);
+    i ? c.lineTo(X, Y) : c.moveTo(X, Y);
+  }
+  c.stroke(); c.globalAlpha = 1;
+  /* speed */
+  const tone = SPD.on ? css("--signal", "#9fe0d4") : css("--ink-dim", "#737b86");
+  c.beginPath(); c.moveTo(g.x(0), g.y(0));
+  for (let i = 0; i <= 200; i++) { const t = i / 200; c.lineTo(g.x(t), g.y(spdSpeedAt(t))); }
+  c.lineTo(g.x(1), g.y(0)); c.closePath();
+  c.globalAlpha = 0.15; c.fillStyle = tone; c.fill(); c.globalAlpha = 1;
+  c.strokeStyle = tone; c.lineWidth = 1.5 * g.s; c.beginPath();
+  for (let i = 0; i <= 200; i++) { const t = i / 200, X = g.x(t), Y = g.y(spdSpeedAt(t)); i ? c.lineTo(X, Y) : c.moveTo(X, Y); }
+  c.stroke();
+  for (const p of SPD.pts) {
+    c.fillStyle = p === spdDrag?.p ? css("--live", "#ff5a3c") : css("--ink", "#cfd4da");
+    c.beginPath(); c.arc(g.x(p.t), g.y(p.s), 4 * g.s, 0, Math.PI * 2); c.fill();
+  }
+  /* playhead */
+  c.strokeStyle = css("--live", "#ff5a3c"); c.lineWidth = g.s; c.globalAlpha = 0.7;
+  c.beginPath(); c.moveTo(g.x(playhead), 0); c.lineTo(g.x(playhead), g.H); c.stroke(); c.globalAlpha = 1;
+  $("spdInfo").textContent = SPD.on
+    ? `Speed here ×${spdSpeedAt(playhead).toFixed(2)} · camera at ${(camWarp(playhead) * 100).toFixed(0)}% of its move`
+    : "Off — the camera moves at the pace of its keys.";
+}
+function spdFit() {
+  const s = Math.min(devicePixelRatio || 1, 2);
+  spdCv.width = Math.max(1, Math.round(spdCv.clientWidth * s));
+  spdCv.height = Math.max(1, Math.round(spdCv.clientHeight * s));
+  spdDraw();
+}
+spdCv.addEventListener("pointerdown", (ev) => {
+  const r = spdCv.getBoundingClientRect(), cx = ev.clientX - r.left, cy = ev.clientY - r.top, g = spdGeom();
+  const hit = SPD.pts.find((p) => Math.hypot(g.x(p.t) - cx * g.s, g.y(p.s) - cy * g.s) < 9 * g.s);
+  if (!hit) return;
+  const i = SPD.pts.indexOf(hit);
+  if (ev.altKey) {
+    if (i > 0 && i < SPD.pts.length - 1) { SPD.pts.splice(i, 1); spdChanged(true); }
+    return;
+  }
+  spdDrag = { p: hit, i };
+  spdCv.setPointerCapture(ev.pointerId);
+  spdDraw();
+});
+spdCv.addEventListener("pointermove", (ev) => {
+  if (!spdDrag) return;
+  const r = spdCv.getBoundingClientRect(), g = spdGeom(), { p, i } = spdDrag, n = SPD.pts.length;
+  p.s = g.vAt(ev.clientY - r.top);
+  if (i > 0 && i < n - 1) p.t = clampNum(g.tAt(ev.clientX - r.left), SPD.pts[i - 1].t + 0.01, SPD.pts[i + 1].t - 0.01);   // ends stay at 0 and 1
+  if (!SPD.on) { SPD.on = true; $("spdOn").checked = true; }
+  spdChanged(false);
+});
+for (const t of ["pointerup", "pointercancel"]) spdCv.addEventListener(t, () => { if (spdDrag) { spdDrag = null; spdChanged(true); } });
+spdCv.addEventListener("dblclick", (ev) => {
+  const r = spdCv.getBoundingClientRect(), g = spdGeom();
+  const t = g.tAt(ev.clientX - r.left);
+  if (SPD.pts.some((p) => Math.abs(p.t - t) < 0.015)) return;
+  SPD.pts.push({ t, s: g.vAt(ev.clientY - r.top) });
+  SPD.pts.sort((a, b) => a.t - b.t);
+  if (!SPD.on) { SPD.on = true; $("spdOn").checked = true; }
+  spdChanged(true);
+});
+const SPD_PRESETS = {
+  linear: [[0, 1], [1, 1]],
+  inout: [[0, 0], [0.5, 2], [1, 0]],
+  in: [[0, 0], [1, 2]],
+  out: [[0, 2], [1, 0]],
+  slowmid: [[0, 1.6], [0.5, 0.25], [1, 1.6]],
+  hold: [[0, 1.3], [0.4, 1.3], [0.45, 0], [0.55, 0], [0.6, 1.3], [1, 1.3]],
+  pulse: [[0, 0.6], [0.4, 0.6], [0.5, 3], [0.6, 0.6], [1, 0.6]],
+};
+function spdSetPts(arr) { SPD.pts = arr.map(([t, s]) => ({ t, s })); spdChanged(true); }
+$("spdPreset").onchange = () => {
+  const v = $("spdPreset").value;
+  $("spdPreset").value = "";
+  if (!SPD_PRESETS[v]) return;
+  SPD.on = true; $("spdOn").checked = true;
+  spdSetPts(SPD_PRESETS[v]);
+};
+$("spdReset").onclick = () => spdSetPts(SPD_PRESETS.linear);
+$("spdOn").onchange = () => { SPD.on = $("spdOn").checked; spdChanged(false); refreshKeyBtns(); };
+$("spdParams").onchange = () => { SPD.params = $("spdParams").checked; spdChanged(false); refreshKeyBtns(); };
+addEventListener("resize", spdFit);
+document.querySelector('.mod[data-group="camera"]').addEventListener("toggle", spdFit);
+spdFit();
+spdReady = true;
+
+/* Preset — additive. */
+function spdSerialize() { return { on: SPD.on, params: SPD.params, pts: SPD.pts.map((p) => [+p.t.toFixed(5), +p.s.toFixed(5)]) }; }
+function spdApplyPreset(o) {
+  if (!o || typeof o !== "object") return;
+  if (Array.isArray(o.pts) && o.pts.length >= 2) {
+    const pts = o.pts.filter((a) => Array.isArray(a) && Number.isFinite(a[0]) && Number.isFinite(a[1]))
+      .map(([t, s]) => ({ t: clampNum(t, 0, 1), s: clampNum(s, 0, 50) })).sort((a, b) => a.t - b.t);
+    if (pts.length >= 2) { pts[0].t = 0; pts[pts.length - 1].t = 1; SPD.pts = pts; }
+  }
+  SPD.on = !!o.on; SPD.params = !!o.params;
+  $("spdOn").checked = SPD.on; $("spdParams").checked = SPD.params;
+  spdBuild(); spdDraw(); drawCamRow();
+}
+
+/* ------------------------------------------------------------------ *
  * Transport + live loop
  * ------------------------------------------------------------------ */
 let lastT = performance.now(), fpsAvg = 0;
@@ -6860,6 +7289,7 @@ function frame(now) {
     driveCamera();      // playback drives every frame; paused frames do NOT — that was the bug (see Phase 1 in NOTES)
     drawCamRow();
     if (VM.proc) vmDrawPlot();
+    if (SPD.on) spdDraw();
     audMeters();
     drawLane();
     drawSparkline();
@@ -7222,6 +7652,7 @@ function serialize() {
     tracking: tkSerialize(),
     motion: motionSerialize(),
     midi: { map: MIDI.map, smooth: MIDI.smooth },
+    speed: spdSerialize(),
     audio: {
       name: audioName,
       /* Additive, no version bump — absent means false, the old behaviour. */
@@ -7543,6 +7974,7 @@ function applyPreset(o) {
 
   tkApplyPreset(o.tracking);   // OVVO fork — absent means "leave as is"
   motionApplyPreset(o.motion);
+  spdApplyPreset(o.speed);
   /* MIDI bindings ride along, but an empty or absent block never wipes the
      mapping this workstation already has. */
   if (o.midi?.map && Object.keys(o.midi.map).length && midiLoadObj(o.midi)) { midiSave(); midiRefreshUI(); }
@@ -8115,6 +8547,7 @@ if (DEBUG) {
     get rgSlot(){ return rgSlot; },
     get MAX_REGIONS(){ return MAX_REGIONS; },
     get playhead(){ return playhead; },
+    get SPD(){ return SPD; }, camWarp, camUnwarp, spdSetPts, keysCopy, keysPaste, keysDelete, keysSelectAll, get laneSel(){ return laneSel; }, get camSel(){ return camSel; }, get KEYCLIP(){ return KEYCLIP; }, get ENV(){ return ENV; },
     get MIDI(){ return MIDI; }, midiHandle, midiSetLearn, midiSetPending, midiParseBle, setKiosk, midiRefreshUI,
     get VM(){ return VM; }, get PATH(){ return PATH; }, vmAnalyse, vmApply, vmAt, vmProcess, pathSetFrames, pathLoadFiles, pathWorldAt, pathEvaluate, pathBake, parseColmapImages, parseTransformsJson, parseChan,
     get TK(){ return TK; }, tkApply, tkRestore, tkPushSample, tkUpdate, tkTakeAt, tkStart, tkStop, tkOnFace, tkOnOrient,
@@ -8226,7 +8659,7 @@ function stepFrame(dir) {
 function jumpCamKey(dir) {
   if (!CAMKEYS.length) return;
   const eps = 1e-6;
-  const ts = CAMKEYS.map((k) => k.t);
+  const ts = CAMKEYS.map((k) => camUnwarp(k.t));          // OVVO fork — keys in playhead time
   const next = dir > 0
     ? ts.filter((t) => t > playhead + eps).sort((a, b) => a - b)[0]
     : ts.filter((t) => t < playhead - eps).sort((a, b) => b - a)[0];
